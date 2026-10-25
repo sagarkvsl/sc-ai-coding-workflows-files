@@ -1,0 +1,18 @@
+# Node
+node_modules/
+dist/
+coverage/
+*.log
+
+# Secrets and local model/server config
+.env
+.env.local
+.env.*.local
+
+# Editors
+.idea/
+
+# OS
+.DS_Store
+**/.DS_Store
+Thumbs.db
