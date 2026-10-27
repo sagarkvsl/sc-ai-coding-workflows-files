@@ -1,0 +1,11 @@
+[
+  "four reported problems [LAB 2] a failed submit does not clear what was typed",
+  "four reported problems [LAB 2] searching still matches titles and ignores case",
+  "four reported problems [LAB 2] selectVisibleTasks matches a description and a title separately",
+  "four reported problems [LAB 2] the header and column counts reflect the new task in To do",
+  "four reported problems [LAB 3] the reducer puts an added task first and keeps the rest in order",
+  "four reported problems [LAB 4] a newly added task appears in To do and not in In progress",
+  "four reported problems [LAB 4] after adding a task the Title field has focus again",
+  "four reported problems [LAB 4] searching for a word that is only in a description finds the task",
+  "four reported problems [LAB 4] the newest task is shown at the top of its column"
+]

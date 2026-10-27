@@ -1,0 +1,47 @@
+{
+  "_readme": "One entry per model. tier is one of: frontier, free-tier, self-hosted. price is USD per million tokens (0 for free-tier and self-hosted). toolMode: 'native' uses the endpoint's tool calling; 'json' is for models without it. contextTokens makes the runner drop old tool output before the window fills. Model names change often: check the provider's current list and edit 'model'. Set 'enabled' to true once the entry is real.",
+  "models": {
+    "ollama-local": {
+      "enabled": false,
+      "label": "FILL: local model name",
+      "tier": "self-hosted",
+      "baseUrl": "http://localhost:11434/v1",
+      "model": "FILL: the tag you pulled, for example from `ollama list`",
+      "toolMode": "native",
+      "contextTokens": 32000,
+      "price": { "input": 0, "output": 0 }
+    },
+    "lmstudio-local": {
+      "enabled": false,
+      "label": "FILL: local model name",
+      "tier": "self-hosted",
+      "baseUrl": "http://localhost:1234/v1",
+      "model": "FILL: the model id LM Studio shows",
+      "toolMode": "native",
+      "contextTokens": 32000,
+      "price": { "input": 0, "output": 0 }
+    },
+    "openrouter-free": {
+      "enabled": false,
+      "label": "FILL: a free model from the provider's list",
+      "tier": "free-tier",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "model": "FILL: a model id ending in :free",
+      "toolMode": "native",
+      "contextTokens": 32000,
+      "price": { "input": 0, "output": 0 }
+    },
+    "openrouter-frontier": {
+      "enabled": false,
+      "label": "FILL: a frontier model, to compare in the same harness",
+      "tier": "frontier",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKeyEnv": "OPENROUTER_API_KEY",
+      "model": "FILL: the provider's id for that model",
+      "toolMode": "native",
+      "contextTokens": 200000,
+      "price": { "input": 0, "output": 0 }
+    }
+  }
+}

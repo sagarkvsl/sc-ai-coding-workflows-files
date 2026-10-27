@@ -1,0 +1,6 @@
+{
+  "id": "contract-change",
+  "type": "contract change, hidden consumer",
+  "title": "Change two function signatures; callers live in src/ and in tools/",
+  "allowedFiles": ["src/utils/date.ts", "src/state/selectors.ts", "src/types/task.ts", "src/hooks/useTasks.ts", "src/components/TaskCard.tsx", "tools/report/report.ts"]
+}
