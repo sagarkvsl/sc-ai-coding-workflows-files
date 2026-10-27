@@ -44,13 +44,13 @@ The script works on macOS, Linux and Windows. It:
 
 - checks Git, your Git identity, Node.js, npm and your editor
 - checks Claude Code is installed and signed in, and offers to install it
-- downloads the DeepSeek harness (about 900 MB, a few minutes), starts its web UI on `127.0.0.1:3080` to check it works, then stops it
+- downloads the DeepSeek harness (about 900 MB, a few minutes), starts its web UI on `127.0.0.1:3080` (or the next free port up to 3089, if another app uses it) to check it works, then stops it
 - checks that the DeepSeek models are on OpenRouter and, if you have your own key, that it works and has credit (the key is never saved or printed)
 - installs the demo app and runs its tests, which also caches the packages you'll need in Stage 0
 - creates your workshop project at `~/prompt-pantry` with `specs/` and a first commit
 - says whether your laptop can handle the local stages
 
-It ends with a summary. Fix anything marked ✖ before the workshop. Items marked ! are worth a look but won't block you. Run `node setup.mjs --check` on the day to recheck without changing anything, and `node setup.mjs --help` for all options (for example `--project <dir>`).
+It ends with a summary, then opens the DeepSeek web UI in your browser and leaves it running (not with `--check`). Fix anything marked ✖ before the workshop. Items marked ! are worth a look but won't block you. Run `node setup.mjs --check` on the day to recheck without changing anything, and `node setup.mjs --help` for all options (for example `--project <dir>`).
 
 ### 3. Models and keys
 

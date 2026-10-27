@@ -24,6 +24,7 @@ const REPO_DIR = path.dirname(fileURLToPath(import.meta.url));
 const IS_WINDOWS = process.platform === 'win32';
 const HARNESS_PACKAGE = '@deepseek-ai/dsh';
 const HARNESS_PORT = 3080;
+const HARNESS_LAST_PORT = 3089; // other apps on 3080 push the harness up to here
 const OPENROUTER_API = process.env.WORKSHOP_OPENROUTER_API ?? 'https://openrouter.ai/api/v1';
 const DEEPSEEK_MODELS = ['deepseek/deepseek-v4-pro', 'deepseek/deepseek-v4-flash'];
 
@@ -185,6 +186,37 @@ function portInUse(port) {
     socket.once('error', () => resolve(false));
     socket.setTimeout(1500, () => { socket.destroy(); resolve(false); });
   });
+}
+
+// Without a login, the harness answers every request with a 401 and this text,
+// which tells it apart from any other app on the port.
+async function isHarness(port) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(3000) });
+    return response.status === 401 && (await response.text()).includes('dsh web authentication required');
+  } catch {
+    return false;
+  }
+}
+
+// Walks 3080-3089 and stops at the first port that is free, or that already
+// runs the harness (reused, so reruns do not start a second copy). Ports held
+// by other apps are skipped. Returns undefined when every port is taken.
+async function findHarnessPort() {
+  for (let port = HARNESS_PORT; port <= HARNESS_LAST_PORT; port++) {
+    if (!(await portInUse(port))) return { port, running: false };
+    if (await isHarness(port)) return { port, running: true };
+  }
+  return undefined;
+}
+
+// Copy-paste commands for the participant's own OS. Nothing here is run by the script.
+function portCommands(port) {
+  return IS_WINDOWS
+    ? { find: `Get-NetTCPConnection -LocalPort ${port} -State Listen`,
+        stop: `Stop-Process -Id (Get-NetTCPConnection -LocalPort ${port} -State Listen).OwningProcess` }
+    : { find: `lsof -iTCP:${port} -sTCP:LISTEN`,
+        stop: `kill $(lsof -t -iTCP:${port} -sTCP:LISTEN)` };
 }
 
 // ---------- prompts ----------
@@ -350,7 +382,10 @@ async function checkClaude(opts) {
   }
 }
 
-// Downloads the harness through npx, starts the web UI and waits for it to listen.
+// Picks a port, downloads the harness through npx, starts the web UI there and
+// waits for it to listen. Returns { status, port }: status 'running' when the
+// harness already serves that port, 'checked' when our own test start worked.
+// Returns undefined if the harness is skipped, broken, or has no free port.
 async function checkHarness(opts) {
   section('DeepSeek harness');
   if (opts.skipHarness) {
@@ -360,9 +395,22 @@ async function checkHarness(opts) {
   if (process.platform === 'darwin' && readdirSafe('/Applications').some((app) => /deepseek/i.test(app))) {
     record('ok', 'DeepSeek harness desktop app', 'found in /Applications');
   }
-  if (await portInUse(HARNESS_PORT)) {
-    record('ok', 'DeepSeek harness web UI', `something is already running on 127.0.0.1:${HARNESS_PORT}`);
+  const slot = await findHarnessPort();
+  if (!slot) {
+    record('fail', 'DeepSeek harness web UI', `ports ${HARNESS_PORT}-${HARNESS_LAST_PORT} are all used by other apps`,
+      `Either free one of them, then rerun: node setup.mjs\n` +
+      `  See what holds a port: ${portCommands(HARNESS_PORT).find}\n` +
+      `Or start the harness yourself on any free port:\n` +
+      `  npx ${HARNESS_PACKAGE} web --port 3100     (or --port 0 to let it pick one)`);
     return;
+  }
+  const { port } = slot;
+  if (slot.running) {
+    record('ok', 'DeepSeek harness web UI', `already running on 127.0.0.1:${port}`);
+    return { status: 'running', port };
+  }
+  if (port !== HARNESS_PORT) {
+    console.log(dim(`  Port ${HARNESS_PORT} is used by another app, so the harness will use port ${port}.`));
   }
 
   // The first download is close to 1 GB and takes minutes. That is why it happens
@@ -377,10 +425,11 @@ async function checkHarness(opts) {
   record('ok', 'DeepSeek harness download', `version ${parseVersion(download.stdout)?.join('.') ?? download.stdout.split('\n').pop()}`);
 
   console.log(dim('  Starting the web UI to check it runs...'));
-  const started = await startHarness(120_000);
+  const started = await startHarness(120_000, port);
   if (started.ok) {
-    record('ok', 'DeepSeek harness web UI', `started on 127.0.0.1:${HARNESS_PORT}, then stopped again`,
-      `Start it at the workshop with: npx ${HARNESS_PACKAGE} web`);
+    record('ok', 'DeepSeek harness web UI', `started on 127.0.0.1:${port}, then stopped again`,
+      `Start it again later with: npx ${HARNESS_PACKAGE} web${port === HARNESS_PORT ? '' : ` --port ${port}`}`);
+    return { status: 'checked', port };
   } else {
     record('fail', 'DeepSeek harness web UI', started.reason,
       `Try it by hand: npx ${HARNESS_PACKAGE} web\n` +
@@ -393,9 +442,9 @@ function readdirSafe(dir) {
   try { return readdirSync(dir); } catch { return []; }
 }
 
-function startHarness(timeoutMs) {
+function startHarness(timeoutMs, port) {
   return new Promise((resolve) => {
-    const child = spawn('npx', ['-y', HARNESS_PACKAGE, 'web', '--no-open'], {
+    const child = spawn('npx', ['-y', HARNESS_PACKAGE, 'web', '--no-open', '--port', String(port)], {
       shell: IS_WINDOWS,
       detached: !IS_WINDOWS,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -416,7 +465,7 @@ function startHarness(timeoutMs) {
     child.on('error', (err) => finish({ ok: false, reason: `could not run npx (${err.message})` }));
     child.on('exit', (code) => finish({ ok: false, reason: `exited early with code ${code}` }));
     const poll = setInterval(async () => {
-      if (await portInUse(HARNESS_PORT)) finish({ ok: true });
+      if (await portInUse(port)) finish({ ok: true });
     }, 1000);
     const timer = setTimeout(() => finish({ ok: false, reason: `did not start within ${timeoutMs / 1000}s` }), timeoutMs);
   });
@@ -428,6 +477,34 @@ function stopTree(child) {
     if (IS_WINDOWS) spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F']);
     else process.kill(-child.pid, 'SIGTERM');
   } catch { /* already gone */ }
+}
+
+// Participants run this at the workshop and go straight to the DeepSeek UI, so
+// setup ends by leaving it running. dsh opens the default browser on its login
+// link itself (and skips that over SSH). Only for a person at a terminal: never
+// in --check mode, and never when output is piped (CI, the Docker sandbox).
+async function openHarness(opts, harness) {
+  if (!harness || opts.check || !process.stdout.isTTY) return;
+  const { status, port } = harness;
+  if (status === 'running') {
+    console.log(`DeepSeek web UI already running: http://127.0.0.1:${port}`);
+    console.log('Seeing "authentication required"? Stop it, then rerun node setup.mjs:');
+    console.log(`  ${portCommands(port).stop}\n`);
+    return;
+  }
+  // stopTree() does not wait, so the test server may still hold the port.
+  for (let i = 0; i < 20 && await portInUse(port); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  console.log(bold('Opening the DeepSeek web UI...\n'));
+  const child = spawn('npx', ['-y', HARNESS_PACKAGE, 'web', '--port', String(port)], {
+    shell: IS_WINDOWS,
+    cwd: existsSync(opts.project) ? opts.project : os.homedir(),
+    detached: true,     // its own process group, so it outlives this script
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  child.unref();
 }
 
 async function checkOpenRouter(opts) {
@@ -608,11 +685,13 @@ async function main() {
   const nodeOk = checkNode();
   checkEditor();
   await checkClaude(opts);
-  if (nodeOk) await checkHarness(opts);
+  const harness = nodeOk ? await checkHarness(opts) : undefined;
   await checkOpenRouter(opts);
   if (nodeOk) checkDemo(opts);
   await createProject(opts, gitOk);
-  return printSummary(opts);
+  const code = printSummary(opts);
+  await openHarness(opts, harness);
+  return code;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

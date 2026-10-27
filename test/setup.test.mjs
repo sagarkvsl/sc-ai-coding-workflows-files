@@ -236,19 +236,75 @@ describe('setup.mjs end to end (no network)', posixOnly, () => {
   });
 
   test('a harness already listening on 3080 is reported, not restarted', async (t) => {
-    const server = createTcpServer((socket) => socket.end());
-    const listening = await new Promise((resolve) => {
-      server.once('error', () => resolve(false));
-      server.listen(3080, '127.0.0.1', () => resolve(true));
-    });
-    if (!listening) return t.skip('port 3080 is busy on this machine');
+    const server = await occupy(3080, fakeHarness());
+    if (!server) return t.skip('port 3080 is busy on this machine');
     try {
       const { env } = makeEnv({ claude: 'logged-in' });
       const { code, out } = await runSetup(['--check', '--skip-demo'], env);
       assert.equal(code, 0, out);
       assert.match(out, /already running on 127\.0\.0\.1:3080/);
+      assert.doesNotMatch(out, /Downloading/);
     } finally {
       server.close();
     }
   });
+
+  test('another app on 3080 moves the harness to 3081', async (t) => {
+    const other = await occupy(3080);
+    const next = other && await occupy(3081);
+    if (!next) { other?.close(); return t.skip('ports 3080-3081 are busy on this machine'); }
+    next.close(); // only checked that 3081 is free; the stub harness takes it
+    try {
+      const { home, env } = makeEnv({ claude: 'logged-in' });
+      // Stub npx: reports a version, and serves like the harness on the --port it gets.
+      writeFileSync(path.join(home, 'stub-bin', 'npx'), `#!${process.execPath}
+const args = process.argv.slice(2);
+if (args.includes('--version')) { console.log('0.2.1'); process.exit(0); }
+const port = Number(args[args.indexOf('--port') + 1]);
+require('node:http').createServer((req, res) => { res.statusCode = 401; res.end('dsh web authentication required'); }).listen(port, '127.0.0.1');
+`);
+      chmodSync(path.join(home, 'stub-bin', 'npx'), 0o755);
+      const { code, out } = await runSetup(['--check', '--skip-demo'], env);
+      assert.equal(code, 0, out);
+      assert.match(out, /Port 3080 is used by another app, so the harness will use port 3081/);
+      assert.match(out, /started on 127\.0\.0\.1:3081, then stopped again/);
+      assert.match(out, /npx @deepseek-ai\/dsh web --port 3081/);
+    } finally {
+      other.close();
+    }
+  });
+
+  test('every port taken by other apps fails with what to do next', async (t) => {
+    const servers = [];
+    for (let port = 3080; port <= 3089; port++) servers.push(await occupy(port));
+    try {
+      if (servers.includes(null)) return t.skip('ports 3080-3089 are busy on this machine');
+      const { env } = makeEnv({ claude: 'logged-in' });
+      const { code, out } = await runSetup(['--check', '--skip-demo'], env);
+      assert.equal(code, 1, out);
+      assert.match(out, /ports 3080-3089 are all used by other apps/);
+      assert.match(out, /rerun: node setup\.mjs/);
+      assert.match(out, /npx @deepseek-ai\/dsh web --port 3100/);
+      assert.doesNotMatch(out, /Downloading/);
+    } finally {
+      for (const server of servers) server?.close();
+    }
+  });
 });
+
+// Holds a port for a test: by default a plain TCP app that is not the harness.
+// Resolves null when the port is already taken on this machine.
+function occupy(port, server = createTcpServer((socket) => socket.end())) {
+  return new Promise((resolve) => {
+    server.once('error', () => resolve(null));
+    server.listen(port, '127.0.0.1', () => resolve(server));
+  });
+}
+
+// Answers like the harness does before login.
+function fakeHarness() {
+  return createServer((req, res) => {
+    res.statusCode = 401;
+    res.end('dsh web authentication required; reopen the URL printed by dsh web.\n');
+  });
+}
