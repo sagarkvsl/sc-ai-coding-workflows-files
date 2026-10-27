@@ -134,6 +134,39 @@ function run(cmd, args = [], options = {}) {
   };
 }
 
+// Like run(), but async, printing a dot every 10 s. Used for the multi-minute
+// harness download, so the screen does not look frozen (people press Enter).
+function runWithProgress(cmd, args, timeoutMs) {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { shell: IS_WINDOWS, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    let dots = 0;
+    let timedOut = false;
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    const ticker = setInterval(() => process.stdout.write(dots++ === 0 ? '  .' : '.'), 10_000);
+    const timer = setTimeout(() => { timedOut = true; child.kill(); }, timeoutMs);
+    let settled = false;
+    const finish = (code, error) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(ticker);
+      clearTimeout(timer);
+      if (dots) process.stdout.write('\n');
+      resolve({
+        ok: code === 0 && !timedOut,
+        code,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        error: timedOut ? { code: 'ETIMEDOUT' } : error,
+      });
+    };
+    child.on('error', (err) => finish(null, err));
+    child.on('close', (code) => finish(code));
+  });
+}
+
 function onPath(cmd) {
   const probe = IS_WINDOWS ? run('where', [cmd]) : run('sh', ['-c', `command -v ${cmd}`]);
   return probe.ok && probe.stdout.length > 0;
@@ -156,10 +189,20 @@ function portInUse(port) {
 
 // ---------- prompts ----------
 
-let rl;
-function getReadline() {
-  rl ??= readline.createInterface({ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY });
-  return rl;
+// People press Enter while the long steps run silently. The terminal keeps
+// those keys, and the next question would take them as its answer. So every
+// question throws away pending input first, then opens a fresh readline.
+// Raw mode makes half-typed lines readable too, so they are dropped as well.
+async function openReadline() {
+  if (process.stdin.isTTY) {
+    const discard = () => {};
+    process.stdin.setRawMode(true);
+    process.stdin.on('data', discard).resume();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    process.stdin.off('data', discard).pause();
+    process.stdin.setRawMode(false);
+  }
+  return readline.createInterface({ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY });
 }
 
 function canAsk(opts) {
@@ -168,7 +211,9 @@ function canAsk(opts) {
 
 async function ask(opts, question, fallback) {
   if (!canAsk(opts)) return fallback;
-  const answer = await new Promise((resolve) => getReadline().question(`  ${question} `, resolve));
+  const r = await openReadline();
+  const answer = await new Promise((resolve) => r.question(`  ${question} `, resolve));
+  r.close();
   return answer.trim() || fallback;
 }
 
@@ -181,14 +226,14 @@ async function confirm(opts, question, fallback) {
 // Reads a line without echoing it, for the API key.
 async function askSecret(opts, question) {
   if (!canAsk(opts)) return '';
-  const r = getReadline();
+  const r = await openReadline();
   const write = r._writeToOutput;
   r._writeToOutput = (text) => {
     if (text.includes(question)) write.call(r, text);
     else if (text.includes('\n') || text.includes('\r')) write.call(r, '\n');
   };
   const answer = await new Promise((resolve) => r.question(`  ${question} `, resolve));
-  r._writeToOutput = write;
+  r.close();
   return answer.trim();
 }
 
@@ -323,7 +368,7 @@ async function checkHarness(opts) {
   // The first download is close to 1 GB and takes minutes. That is why it happens
   // here at home instead of on conference Wi-Fi. Later starts take seconds.
   console.log(dim(`  Downloading ${HARNESS_PACKAGE} (about 900 MB the first time, can take 5 minutes)...`));
-  const download = run('npx', ['-y', HARNESS_PACKAGE, '--version'], { timeout: 900_000 });
+  const download = await runWithProgress('npx', ['-y', HARNESS_PACKAGE, '--version'], 900_000);
   if (!download.ok) {
     record('fail', 'DeepSeek harness download', download.error?.code === 'ETIMEDOUT' ? 'timed out after 15 minutes' : `npx failed (exit ${download.code})`,
       `Try it by hand: npx ${HARNESS_PACKAGE} web\n` + lastLines(download.stderr || download.stdout));
@@ -567,7 +612,6 @@ async function main() {
   await checkOpenRouter(opts);
   if (nodeOk) checkDemo(opts);
   await createProject(opts, gitOk);
-  rl?.close();
   return printSummary(opts);
 }
 
