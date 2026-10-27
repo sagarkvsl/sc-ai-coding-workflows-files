@@ -1,0 +1,13 @@
+[
+  "status migration [LAB 2] isOverdue works for the new statuses and not for done",
+  "status migration [LAB 3] a task added through the form lands in Backlog",
+  "status migration [LAB 3] groupByStatus returns the three new keys",
+  "status migration [LAB 3] the empty column text is unchanged",
+  "status migration [LAB 3] the reducer moves a task to review and clears only done tasks",
+  "status migration [LAB 4] STATUSES and STATUS_LABELS use the new names in the same order",
+  "status migration [LAB 4] move buttons use the new labels and move the card",
+  "status migration [LAB 4] the existing tests were migrated rather than deleted",
+  "status migration [LAB 4] the three columns are named Backlog, In review and Done with counts",
+  "status migration [LAB 5] the report tool prints the new column names",
+  "status migration [LAB 8] no old status word is left in src, tools or the README"
+]

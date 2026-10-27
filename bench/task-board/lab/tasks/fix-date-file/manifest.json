@@ -1,0 +1,12 @@
+[
+  "date fixes [LAB 2] formatDueDate leaves an invalid date unchanged",
+  "date fixes [LAB 2] the add form still rejects yesterday",
+  "date fixes [LAB 2] the report lists a task due today as not overdue",
+  "date fixes [LAB 3] a card due today has no Overdue badge but one due yesterday has",
+  "date fixes [LAB 3] isOverdue is false for a task due today and true for one due yesterday",
+  "date fixes [LAB 3] isPastDate says today is not past and yesterday is",
+  "date fixes [LAB 3] the add form accepts today as a due date",
+  "date fixes [LAB 3] the report names today by its local date in the evening",
+  "date fixes [LAB 4] formatDueDate names every month correctly",
+  "date fixes [LAB 4] toIsoDate returns the local calendar date late in the evening"
+]

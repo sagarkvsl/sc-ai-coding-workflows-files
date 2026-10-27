@@ -1,0 +1,5 @@
+{
+  "id": "migrate-status",
+  "type": "mechanical migration",
+  "title": "Rename two statuses everywhere (code, tests, tools, docs)"
+}

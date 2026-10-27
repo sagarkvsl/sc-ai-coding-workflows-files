@@ -1,0 +1,6 @@
+{
+  "id": "fix-date-file",
+  "type": "single-file fix",
+  "title": "Three date symptoms with one root file",
+  "allowedFiles": ["src/utils/date.ts"]
+}

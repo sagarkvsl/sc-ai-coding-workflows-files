@@ -1,0 +1,14 @@
+[
+  "callers still work [LAB 3] the report tool handles an empty board",
+  "callers still work [LAB 5] the board still sorts every column through the Sort by select",
+  "callers still work [LAB 5] the card still shows Overdue for a past due task and not for today or done",
+  "callers still work [LAB 5] the report tool still names the highest priority open task",
+  "callers still work [LAB 6] the report tool lists overdue tasks, earliest first, through the new signatures",
+  "isOverdue(task, today) [LAB 2] accepts a full task object",
+  "isOverdue(task, today) [LAB 4] takes a task-like object and applies the same rule",
+  "sortTasks(tasks, options) [LAB 2] reverse: false and a missing reverse behave the same",
+  "sortTasks(tasks, options) [LAB 2] the SortOptions type is exported from types/task.ts as a type only",
+  "sortTasks(tasks, options) [LAB 3] still returns a new array and never mutates the input",
+  "sortTasks(tasks, options) [LAB 4] reverse: true returns the whole sorted list in reverse order",
+  "sortTasks(tasks, options) [LAB 4] sorts by each key through options.by"
+]

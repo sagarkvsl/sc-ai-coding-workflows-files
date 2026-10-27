@@ -16,3 +16,9 @@ coverage/
 .DS_Store
 **/.DS_Store
 Thumbs.db
+
+# Benchmark scratch output
+bench/task-board/.work/
+bench/task-board/reports/
+bench/task-board/lab/.scratch/
+bench/task-board/lab/.gen/

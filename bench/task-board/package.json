@@ -1,0 +1,30 @@
+{
+  "name": "task-board-bench",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Spec, hidden tests and scorer for judging a model's Task Board output",
+  "scripts": {
+    "score": "node score.mjs",
+    "score:reference": "node score.mjs --target reference"
+  },
+  "dependencies": {
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.8",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "dom-accessibility-api": "^0.7.0",
+    "jsdom": "^26.1.0",
+    "typescript": "~6.0.3",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.5"
+  }
+}

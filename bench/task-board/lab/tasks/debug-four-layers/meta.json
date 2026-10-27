@@ -1,0 +1,6 @@
+{
+  "id": "debug-four-layers",
+  "type": "multi-file debug",
+  "title": "Four symptoms, four layers, no stack traces",
+  "allowedFiles": ["src/hooks/useTaskActions.ts", "src/state/taskReducer.ts", "src/state/selectors.ts", "src/components/TaskForm.tsx"]
+}

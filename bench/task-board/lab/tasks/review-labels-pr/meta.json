@@ -1,0 +1,6 @@
+{
+  "id": "review-labels-pr",
+  "type": "code review",
+  "title": "Review a 20-file labels PR with 7 planted defects",
+  "custom": true
+}
