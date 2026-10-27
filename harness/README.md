@@ -10,7 +10,9 @@ Anything marked **TODO(verify)** needs a test run before the workshop.
 npx @deepseek-ai/dsh web
 ```
 
-This starts the web UI at `http://127.0.0.1:3080`. Node.js is required. The desktop app is available for macOS (Apple silicon) and Windows (64-bit).
+This starts the web UI at `http://127.0.0.1:3080` (add `--no-open` to skip opening a browser). Node.js is required. The desktop app is available for macOS (Apple silicon) and Windows (64-bit).
+
+Verified with `@deepseek-ai/dsh` 0.2.1-rc.2 in a clean container: the first `npx` download is about 870 MB and took about 3 minutes, and later starts took about 3 seconds. `node setup.mjs` in the repo root does the download ahead of time.
 
 ## Add OpenRouter as a provider
 
@@ -21,9 +23,11 @@ The simplest route is the web UI: **Settings → Models → Add custom provider*
 | Base URL | `https://openrouter.ai/api/v1` |
 | API protocol | OpenAI-compatible chat completions (`openai-completions`) |
 | API key | Your OpenRouter key. Do not commit it or share it |
-| Models | The DeepSeek V4 Pro and DeepSeek V4 Flash IDs from the [OpenRouter model list](https://openrouter.ai/models) |
+| Models | `deepseek/deepseek-v4-pro` and `deepseek/deepseek-v4-flash` (both list tool support and a 1M-token context on OpenRouter) |
 
-**TODO(verify):** the exact OpenRouter model IDs for DeepSeek V4 Pro and V4 Flash, and the reasoning-effort setting for each.
+The model IDs were checked against OpenRouter's model list on 2026-10-27. `node setup.mjs` checks them again.
+
+**TODO(verify):** the reasoning-effort setting for each model.
 
 If you prefer a config file, the provider lives under the `llm-pi-ai` plugin. Sources disagree on the file name (`~/.dsh/settings.yaml` in one, a `cordis.patch.yml` patch file in another), so confirm with `dsh headless --dump-config`.
 
@@ -36,8 +40,8 @@ llm-pi-ai:
       api: openai-completions
       baseURL: https://openrouter.ai/api/v1
       models:
-        - id: <deepseek-v4-pro model id>
-        - id: <deepseek-v4-flash model id>
+        - id: deepseek/deepseek-v4-pro
+        - id: deepseek/deepseek-v4-flash
 ```
 
 Set the key in your shell instead of the file:
