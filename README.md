@@ -19,6 +19,7 @@ You do not work inside this repo. Create a project folder of your own, copy `sta
 | `demo/` | A finished Prompt Pantry built from the specs (all three phases), for reference and for the live demo |
 | `setup.mjs` | Pre-workshop setup and check script (see [Before you arrive](#before-you-arrive)) |
 | `test/` | Tests for `setup.mjs`, including Docker sandbox runs |
+| `bench/task-board/` | Benchmarks for coding models: a build-from-spec benchmark and a task-type lab (single-file fix, multi-file debug, cross-file feature, migration, contract change, code review) with hidden tests, scorers and a token and cost audit. Runs Claude agents or any OpenAI-compatible model (free-tier or self-hosted). See its [README](bench/task-board/README.md) and the [lab README](bench/task-board/lab/README.md) |
 | `harness/README.md` | Draft notes for connecting the DeepSeek harness to OpenRouter and local models, and for subagent models |
 | `.gitignore` | Excludes `node_modules`, build output, local env files and editor files |
 

@@ -1,0 +1,17 @@
+{
+  "source": "Anthropic API prices from the claude-api skill model table (cached 2026-10-06). USD per million tokens.",
+  "assumptions": [
+    "Cache-write prices are not in the table: 5-minute cache writes are priced at 1.25x the input price.",
+    "Haiku 5.5 cache reads are not in the table: priced at 0.1x its input price (Opus 5.5 and Sonnet 5.5 cache reads are listed at 0.20).",
+    "Haiku 5.5 prompts above 100K tokens use the long-prompt rates (0.50 in / 2.50 out); cache prices scale by the same 5x."
+  ],
+  "models": {
+    "claude-opus-5-5": { "input": 4.0, "output": 20.0, "cacheRead": 0.2, "cacheWrite": 5.0 },
+    "claude-sonnet-5-5": { "input": 2.0, "output": 10.0, "cacheRead": 0.2, "cacheWrite": 2.5 },
+    "claude-haiku-5-5": {
+      "input": 0.1, "output": 0.5, "cacheRead": 0.01, "cacheWrite": 0.125,
+      "longPromptTokens": 100000,
+      "long": { "input": 0.5, "output": 2.5, "cacheRead": 0.05, "cacheWrite": 0.625 }
+    }
+  }
+}
