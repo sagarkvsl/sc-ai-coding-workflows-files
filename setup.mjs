@@ -135,18 +135,26 @@ function run(cmd, args = [], options = {}) {
   };
 }
 
-// Like run(), but async, printing a dot every 10 s. Used for the multi-minute
-// harness download, so the screen does not look frozen (people press Enter).
+// Like run(), but async, with a spinner and elapsed time while it runs. Used for
+// the multi-minute harness download, so the screen does not look frozen (people
+// press Enter). npm reports no progress we can read, so there is no percentage.
 function runWithProgress(cmd, args, timeoutMs) {
   return new Promise((resolve) => {
     const child = spawn(cmd, args, { shell: IS_WINDOWS, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
-    let dots = 0;
     let timedOut = false;
     child.stdout.on('data', (d) => { stdout += d; });
     child.stderr.on('data', (d) => { stderr += d; });
-    const ticker = setInterval(() => process.stdout.write(dots++ === 0 ? '  .' : '.'), 10_000);
+    // Redrawn in place on one line, so only for a terminal: CI logs stay clean.
+    const frames = IS_WINDOWS ? '|/-\\' : '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
+    const startedAt = Date.now();
+    let frame = 0;
+    const ticker = process.stdout.isTTY && setInterval(() => {
+      const seconds = Math.floor((Date.now() - startedAt) / 1000);
+      const elapsed = `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
+      process.stdout.write(`\r  ${frames[frame++ % frames.length]} Downloading… ${elapsed}`);
+    }, 100);
     const timer = setTimeout(() => { timedOut = true; child.kill(); }, timeoutMs);
     let settled = false;
     const finish = (code, error) => {
@@ -154,7 +162,7 @@ function runWithProgress(cmd, args, timeoutMs) {
       settled = true;
       clearInterval(ticker);
       clearTimeout(timer);
-      if (dots) process.stdout.write('\n');
+      if (ticker) process.stdout.write('\r\x1b[2K'); // erase the spinner line
       resolve({
         ok: code === 0 && !timedOut,
         code,
