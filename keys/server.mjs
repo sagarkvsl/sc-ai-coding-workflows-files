@@ -44,10 +44,22 @@ export function hashDevice(salt, device) {
 
 // ---------- claim state ----------
 
+// Strict on purpose: a bad state file (for example a saved 401 body) must stop the server,
+// not start it with zero claims and hand out keys that are already in someone's hands.
 function readClaims(file) {
   if (!file || !existsSync(file)) return {};
-  const parsed = JSON.parse(readFileSync(file, 'utf8'));
-  return parsed?.claims && typeof parsed.claims === 'object' ? { ...parsed.claims } : {};
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    throw new Error(`state: ${file} is not valid JSON`);
+  }
+  const claims = parsed?.claims;
+  if (!claims || typeof claims !== 'object' || Array.isArray(claims)) throw new Error(`state: ${file} has no "claims" object`);
+  for (const [hash, id] of Object.entries(claims)) {
+    if (typeof hash !== 'string' || !Number.isInteger(id)) throw new Error(`state: ${file} has a bad claim entry (${hash})`);
+  }
+  return { ...claims };
 }
 
 export function createClaims({ stateFile, importFile, log = console.error }) {
@@ -207,12 +219,13 @@ export function createDispenser(config) {
     let status;
     let tag = '';
     try {
-      if (!globalBucket.take('*')) {
-        status = json(res, 429, { error: 'throttled' });
-      } else if (req.method === 'GET' && url === '/healthz') {
+      if (req.method === 'GET' && url === '/healthz') {
+        // Before any bucket: a flood must never make the kubelet think the pod is dead.
         res.writeHead(200, { 'content-type': 'text/plain' });
         res.end('ok');
         status = 200;
+      } else if (!globalBucket.take('*')) {
+        status = json(res, 429, { error: 'throttled' });
       } else if (req.method === 'GET' && url === '/') {
         const html = page();
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });

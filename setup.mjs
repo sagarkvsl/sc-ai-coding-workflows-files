@@ -263,13 +263,20 @@ async function claimKey(opts) {
   }
   if (res.status === 201 && res.body.key) {
     const key = res.body.key;
-    await reportKey(key, 'workshop key');
-    saveKey(key);
+    // Print before anything that can fail: the dispenser will never show this key again.
     console.log(`\n  Your key (shown once): ${key}\n`);
-    record('ok', 'Saved', KEY_FILE,
-      `Before starting the harness, run:  source ${KEY_FILE}\n` +
-      'Or paste the key under Settings → Models in the harness.\n' +
-      `${USE_ONE_PATH}\nDelete the file after the event.`);
+    await reportKey(key, 'workshop key');
+    try {
+      saveKey(key);
+      record('ok', 'Saved', KEY_FILE,
+        `Before starting the harness, run:  source ${KEY_FILE}\n` +
+        'Or paste the key under Settings → Models in the harness.\n' +
+        `${USE_ONE_PATH}\nDelete the file after the event.`);
+    } catch (err) {
+      record('warn', 'Saved', `could not save to ${KEY_FILE} (${err.code ?? err.message})`,
+        'Copy the key printed above now and paste it under Settings → Models in the harness,\n' +
+        `or export OPENROUTER_API_KEY yourself.\n${USE_ONE_PATH}`);
+    }
     return;
   }
   if (res.status === 409) {

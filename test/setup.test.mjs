@@ -282,6 +282,16 @@ describe('setup.mjs end to end (no network)', posixOnly, () => {
       assert.match(claimBodies[0].device, /^[0-9a-f]{64}$/);
     });
 
+    test('--claim still shows the key once when it cannot be saved', async () => {
+      claimBodies = []; seen.clear();
+      const { home, env } = makeEnv({ claude: 'logged-in' });
+      writeFileSync(path.join(home, '.workshop'), 'a file where the directory should be');
+      const { code, out } = await runSetup(['--claim', dispenserUrl, '--code', 'tulip'], env);
+      assert.equal(code, 0, out);
+      assert.equal(out.split('sk-or-good').length - 1, 1, out);
+      assert.match(out, /! .*could not save/);
+    });
+
     test('--claim with a wrong code fails without a prompt and without a TTY', async () => {
       claimBodies = []; seen.clear();
       const { home, env } = makeEnv({ claude: 'logged-in' });

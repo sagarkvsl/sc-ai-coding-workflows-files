@@ -225,6 +225,17 @@ describe('dispenser core', () => {
     assert.deepEqual(imported.claim('X', pool), { status: 'already_claimed' });
   });
 
+  test('a state or import file that is not { claims: {...} } is refused, not treated as empty', () => {
+    const dir = tmp();
+    const bad = path.join(dir, 'bad.json');
+    writeFileSync(bad, JSON.stringify({ error: 'unauthorized' }));
+    assert.throws(() => createClaims({ stateFile: path.join(dir, 's.json'), importFile: bad, log: () => {} }), /bad\.json.*claims/);
+    writeFileSync(bad, 'nope');
+    assert.throws(() => createClaims({ stateFile: bad, log: () => {} }), /bad\.json/);
+    writeFileSync(bad, JSON.stringify({ claims: { A: 'one' } }));
+    assert.throws(() => createClaims({ stateFile: bad, log: () => {} }), /bad\.json/);
+  });
+
   test('an unwritable stateFile logs once and still issues', () => {
     const logs = [];
     const claims = createClaims({ stateFile: '/nonexistent/dir/state.json', log: (m) => logs.push(m) });
@@ -336,12 +347,14 @@ describe('dispenser HTTP', () => {
     } finally { close(); }
   });
 
-  test('global bucket throttles every route', async () => {
+  test('global bucket throttles every route except /healthz, so a spammer cannot trip the probes', async () => {
     const { url, close } = await startDispenser({ globalBucket: createBucket({ capacity: 2, perMinute: 1 }) });
     try {
+      assert.equal((await fetch(`${url}/`)).status, 200);
+      assert.equal((await fetch(`${url}/`)).status, 200);
+      assert.equal((await fetch(`${url}/`)).status, 429);
       assert.equal((await fetch(`${url}/healthz`)).status, 200);
       assert.equal((await fetch(`${url}/healthz`)).status, 200);
-      assert.equal((await fetch(`${url}/healthz`)).status, 429);
     } finally { close(); }
   });
 
