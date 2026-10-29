@@ -12,8 +12,10 @@ import { fileURLToPath } from 'node:url';
 
 import { createClient } from '../keys/openrouter.mjs';
 import { mint, parseMintArgs } from '../keys/mint-keys.mjs';
+import { revoke } from '../keys/revoke-keys.mjs';
 
 const MINT = fileURLToPath(new URL('../keys/mint-keys.mjs', import.meta.url));
+const REVOKE = fileURLToPath(new URL('../keys/revoke-keys.mjs', import.meta.url));
 const MGMT = 'mgmt-test-key';
 
 // ---------- fake OpenRouter provisioning API ----------
@@ -22,6 +24,7 @@ let fake;
 let baseUrl;
 let requests;
 let created;
+let failPatchOnce;
 
 before(async () => {
   fake = createServer((req, res) => {
@@ -39,6 +42,11 @@ before(async () => {
         res.statusCode = 201;
         return res.end(JSON.stringify({ key: `sk-or-fake-${created}`, data: { hash: `hash-${created}` } }));
       }
+      const patch = /^\/api\/v1\/keys\/([^/]+)$/.exec(req.url);
+      if (req.method === 'PATCH' && patch) {
+        if (failPatchOnce === patch[1]) { failPatchOnce = null; res.statusCode = 500; return res.end('{}'); }
+        return res.end(JSON.stringify({ data: { hash: patch[1], disabled: JSON.parse(body).disabled } }));
+      }
       res.statusCode = 404;
       res.end('{}');
     });
@@ -49,7 +57,7 @@ before(async () => {
 
 after(() => fake.close());
 
-beforeEach(() => { requests = []; created = 0; });
+beforeEach(() => { requests = []; created = 0; failPatchOnce = null; });
 
 function runNode(script, args, env = {}) {
   return new Promise((resolve) => {
@@ -127,5 +135,39 @@ describe('mint-keys', () => {
     assert.equal(r.code, 1);
     assert.match(r.err, /401/);
     assert.ok(!existsSync(out));
+  });
+});
+
+// ---------- revoke ----------
+
+describe('revoke-keys', () => {
+  const pool = { keys: [{ id: 1, hash: 'hash-1' }, { id: 2, hash: 'hash-2' }, { id: 3, hash: 'hash-3' }] };
+
+  test('revoke disables every hash in the pool and reports counts', async () => {
+    failPatchOnce = 'hash-2';
+    const client = createClient({ baseUrl, managementKey: MGMT });
+    const result = await revoke(client, pool);
+    assert.deepEqual(result, { disabled: 2, failed: 1 });
+    const patches = requests.filter((r) => r.method === 'PATCH');
+    assert.deepEqual(patches.map((r) => r.url), ['/api/v1/keys/hash-1', '/api/v1/keys/hash-2', '/api/v1/keys/hash-3']);
+    assert.ok(patches.every((r) => JSON.parse(r.body).disabled === true));
+  });
+
+  test('revoke is safe to run twice', async () => {
+    const client = createClient({ baseUrl, managementKey: MGMT });
+    await revoke(client, pool);
+    assert.deepEqual(await revoke(client, pool), { disabled: 3, failed: 0 });
+  });
+
+  test('revoke CLI reads --pool, prints counts, exits 1 when any fail', async () => {
+    const file = path.join(tmp(), 'pool.json');
+    writeFileSync(file, JSON.stringify(pool));
+    failPatchOnce = 'hash-3';
+    const r = await runNode(REVOKE, ['--pool', file], { OPENROUTER_MANAGEMENT_KEY: MGMT, WORKSHOP_OPENROUTER_API: baseUrl });
+    assert.equal(r.code, 1, r.err);
+    assert.match(r.out, /disabled 2/);
+    assert.match(r.out, /failed 1/);
+    const ok = await runNode(REVOKE, ['--pool', file], { OPENROUTER_MANAGEMENT_KEY: MGMT, WORKSHOP_OPENROUTER_API: baseUrl });
+    assert.equal(ok.code, 0, ok.err);
   });
 });
