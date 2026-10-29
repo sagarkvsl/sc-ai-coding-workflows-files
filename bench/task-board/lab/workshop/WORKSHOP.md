@@ -10,7 +10,7 @@ A hands-on part of *Inference at the Edge of Your IDE*. Attendees run the same c
 |---|---|
 | The workshop repo and the harness | `node setup.mjs` (see the root README) |
 | The scorer | `node setup.mjs` installs it (about 170 MB, do it at home). Use `--skip-bench` to skip it |
-| An OpenRouter key | Their own, or the workshop key from the speakers |
+| An OpenRouter key | Their own, or the workshop key from the speakers. Export it as `OPENROUTER_API_KEY`. If it is missing, `setup.mjs` and `ladder.mjs run` ask for it (hidden, not saved) |
 | A local model (optional) | A runtime added as a custom provider, see `harness/README.md` |
 
 ## The ladder

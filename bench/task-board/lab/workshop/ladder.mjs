@@ -17,6 +17,7 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import readline from 'node:readline'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -66,9 +67,28 @@ function requireTask() {
   }
 }
 
+// The key comes from the environment (OPENROUTER_KEY works as well). If it is missing and this is a
+// terminal, ask for it with the input hidden. It is kept in this process only and never written to disk.
+async function ensureKey() {
+  const key = (process.env.OPENROUTER_API_KEY ?? process.env.OPENROUTER_KEY)?.trim()
+  if (key) {
+    process.env.OPENROUTER_API_KEY = key
+    return true
+  }
+  if (!process.stdin.isTTY) return false
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true })
+  const write = rl._writeToOutput
+  const prompt = 'No OpenRouter key is exported. Paste it (hidden, not saved):'
+  rl._writeToOutput = (text) => (text.includes(prompt) ? write.call(rl, text) : text.includes('\n') && write.call(rl, '\n'))
+  const answer = await new Promise((resolve) => rl.question(`${prompt} `, resolve))
+  rl.close()
+  process.env.OPENROUTER_API_KEY = answer.trim()
+  return answer.trim() !== ''
+}
+
 // OpenRouter reports how much a key has spent. null means "could not read it".
 async function keyUsage() {
-  const key = process.env.OPENROUTER_API_KEY
+  const key = process.env.OPENROUTER_API_KEY ?? process.env.OPENROUTER_KEY
   if (!key) return null
   try {
     const res = await fetch('https://openrouter.ai/api/v1/key', {
@@ -116,7 +136,7 @@ if (command === 'tasks') {
   const known = { flash: 'deepseek/deepseek-v4-flash', pro: 'deepseek/deepseek-v4-pro' }
   const id = option('id', local ? undefined : known[slug(model)])
   if (!id) fail(local ? 'give the model name exactly as your runtime lists it: --id <name>' : `unknown label "${model}". Pass the OpenRouter model id: --id vendor/model-name`)
-  if (!local && !process.env.OPENROUTER_API_KEY) fail('set OPENROUTER_API_KEY first')
+  if (!local && !(await ensureKey())) fail('no OpenRouter key. Export OPENROUTER_API_KEY, or run this in a terminal to be asked for it.')
   const minutes = Number(option('timeout', '30'))
   const self = [fileURLToPath(import.meta.url)]
   const common = [taskId, '--model', model, '--root', root]
