@@ -14,10 +14,12 @@ import { fileURLToPath } from 'node:url';
 import { createClient } from '../keys/openrouter.mjs';
 import { mint, parseMintArgs } from '../keys/mint-keys.mjs';
 import { revoke } from '../keys/revoke-keys.mjs';
-import { createBucket, createClaims, createLockout, hashDevice, loadPool } from '../keys/server.mjs';
+import { createBucket, createClaims, createDispenser, createLockout, hashDevice, loadPool } from '../keys/server.mjs';
 
 const MINT = fileURLToPath(new URL('../keys/mint-keys.mjs', import.meta.url));
 const REVOKE = fileURLToPath(new URL('../keys/revoke-keys.mjs', import.meta.url));
+const SERVER = fileURLToPath(new URL('../keys/server.mjs', import.meta.url));
+const PUBLIC = fileURLToPath(new URL('../keys/public', import.meta.url));
 const MGMT = 'mgmt-test-key';
 
 // ---------- fake OpenRouter provisioning API ----------
@@ -253,5 +255,161 @@ describe('dispenser core', () => {
     assert.equal(lockout.locked('e'), false);
     now = 5 * 60 * 1000 + 1;
     assert.equal(lockout.locked('d'), false);
+  });
+});
+
+// ---------- dispenser HTTP ----------
+
+const POOL3 = [{ id: 1, key: 'k1-secret' }, { id: 2, key: 'k2-secret' }, { id: 3, key: 'k3-secret' }];
+
+async function startDispenser(overrides = {}) {
+  const logs = [];
+  const dir = tmp();
+  const server = createDispenser({
+    pool: POOL3,
+    eventCode: 'tulip',
+    deviceSalt: 'salt',
+    statsToken: 'tok',
+    claims: createClaims({ stateFile: path.join(dir, 'state.json'), log: (m) => logs.push(m) }),
+    publicDir: PUBLIC,
+    log: (m) => logs.push(m),
+    ...overrides,
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return { url: `http://127.0.0.1:${server.address().port}`, logs, close: () => server.close() };
+}
+
+async function post(url, body, headers = {}) {
+  const res = await fetch(`${url}/claim`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...headers },
+    body: typeof body === 'string' ? body : JSON.stringify(body),
+  });
+  return { status: res.status, body: await res.json().catch(() => null) };
+}
+
+async function get(url, headers = {}) {
+  const res = await fetch(url, { headers });
+  return { status: res.status, body: await res.json().catch(() => null) };
+}
+
+describe('dispenser HTTP', () => {
+  test('claim flow: 201 once per device, 409 on repeat, 403 wrong code, 503 when empty', async () => {
+    const { url, close } = await startDispenser();
+    try {
+      const first = await post(url, { code: 'tulip', device: 'A' });
+      assert.equal(first.status, 201);
+      assert.deepEqual(first.body, { key: 'k1-secret', id: 1 });
+      assert.equal((await post(url, { code: 'tulip', device: 'A' })).status, 409);
+      assert.deepEqual((await post(url, { code: 'tulip', device: 'A' })).body, { error: 'already_claimed' });
+      assert.equal((await post(url, { code: 'wrong', device: 'B' })).status, 403);
+      assert.equal((await post(url, { code: 'tulip', device: 'B' })).status, 201);
+      assert.equal((await post(url, { code: 'tulip', device: 'C' })).status, 201);
+      const empty = await post(url, { code: 'tulip', device: 'D' });
+      assert.equal(empty.status, 503);
+      assert.deepEqual(empty.body, { error: 'pool_empty' });
+    } finally { close(); }
+  });
+
+  test('bad bodies return 400 and the server keeps serving', async () => {
+    const { url, close } = await startDispenser();
+    try {
+      assert.equal((await post(url, 'not json')).status, 400);
+      assert.equal((await post(url, {})).status, 400);
+      assert.equal((await post(url, { code: 'tulip', device: 'x'.repeat(129) })).status, 400);
+      assert.equal((await post(url, { code: 'tulip', device: 'A', pad: 'y'.repeat(2000) })).status, 400);
+      assert.equal((await post(url, { code: 5, device: 'A' })).status, 400);
+      const health = await fetch(`${url}/healthz`);
+      assert.equal(health.status, 200);
+      assert.equal(await health.text(), 'ok');
+    } finally { close(); }
+  });
+
+  test('client IP comes from cf-connecting-ip, so two tunnel clients get separate buckets', async () => {
+    const { url, close } = await startDispenser({ ipBucket: createBucket({ capacity: 1, perMinute: 1 }) });
+    try {
+      assert.equal((await post(url, { code: 'tulip', device: 'A' }, { 'cf-connecting-ip': '1.1.1.1' })).status, 201);
+      assert.equal((await post(url, { code: 'tulip', device: 'B' }, { 'cf-connecting-ip': '2.2.2.2' })).status, 201);
+      const throttled = await post(url, { code: 'tulip', device: 'C' }, { 'cf-connecting-ip': '1.1.1.1' });
+      assert.equal(throttled.status, 429);
+      assert.deepEqual(throttled.body, { error: 'throttled' });
+    } finally { close(); }
+  });
+
+  test('global bucket throttles every route', async () => {
+    const { url, close } = await startDispenser({ globalBucket: createBucket({ capacity: 2, perMinute: 1 }) });
+    try {
+      assert.equal((await fetch(`${url}/healthz`)).status, 200);
+      assert.equal((await fetch(`${url}/healthz`)).status, 200);
+      assert.equal((await fetch(`${url}/healthz`)).status, 429);
+    } finally { close(); }
+  });
+
+  test('ten wrong codes lock that device only', async () => {
+    const { url, close } = await startDispenser();
+    try {
+      for (let i = 0; i < 10; i++) assert.equal((await post(url, { code: 'nope', device: 'X' })).status, 403);
+      assert.equal((await post(url, { code: 'tulip', device: 'X' })).status, 429);
+      assert.equal((await post(url, { code: 'tulip', device: 'Y' })).status, 201);
+    } finally { close(); }
+  });
+
+  test('/stats and /state need the token and never contain keys', async () => {
+    const { url, close } = await startDispenser();
+    try {
+      await post(url, { code: 'tulip', device: 'A' });
+      assert.equal((await get(`${url}/stats`)).status, 401);
+      assert.equal((await get(`${url}/stats`, { authorization: 'Bearer nope' })).status, 401);
+      const stats = await get(`${url}/stats`, { authorization: 'Bearer tok' });
+      assert.equal(stats.status, 200);
+      assert.deepEqual(stats.body, { total: 3, claimed: 1, remaining: 2 });
+      const state = await get(`${url}/state`, { authorization: 'Bearer tok' });
+      assert.equal(state.status, 200);
+      assert.deepEqual(Object.values(state.body.claims), [1]);
+      assert.ok(!JSON.stringify(state.body).includes('secret'));
+      assert.equal((await get(`${url}/nope`)).status, 404);
+    } finally { close(); }
+  });
+
+  test('logs never contain a key, and carry the outcome', async () => {
+    const { url, logs, close } = await startDispenser();
+    try {
+      await post(url, { code: 'tulip', device: 'A' });
+      await post(url, { code: 'tulip', device: 'A' });
+      const text = logs.join('\n');
+      assert.ok(!text.includes('secret'));
+      assert.ok(!text.includes('tulip'));
+      assert.match(text, /POST \/claim 201/);
+      assert.match(text, /POST \/claim 409/);
+      assert.match(text, /id=1/);
+    } finally { close(); }
+  });
+
+  test('main exits 2 naming a missing env var', async () => {
+    const dir = tmp();
+    const poolFile = path.join(dir, 'pool.json');
+    writeFileSync(poolFile, JSON.stringify({ keys: POOL3 }));
+    const r = await runNode(SERVER, [], { POOL_FILE: poolFile, DEVICE_SALT: 's', STATS_TOKEN: 't', STATE_FILE: path.join(dir, 's.json'), EVENT_CODE: '' });
+    assert.equal(r.code, 2);
+    assert.match(r.err, /EVENT_CODE/);
+  });
+
+  test('main serves on PORT with POOL_LOAD keys', async () => {
+    const dir = tmp();
+    const poolFile = path.join(dir, 'pool.json');
+    writeFileSync(poolFile, JSON.stringify({ keys: POOL3 }));
+    const child = spawn(process.execPath, [SERVER], {
+      env: { ...process.env, POOL_FILE: poolFile, POOL_LOAD: '2', EVENT_CODE: 'tulip', DEVICE_SALT: 's', STATS_TOKEN: 't', STATE_FILE: path.join(dir, 's.json'), PORT: '0' },
+    });
+    let out = '';
+    const port = await new Promise((resolve, reject) => {
+      child.stdout.on('data', (d) => { out += d; const m = /listening on port (\d+)/.exec(out); if (m) resolve(Number(m[1])); });
+      child.stderr.on('data', (d) => { out += d; });
+      child.on('exit', (code) => reject(new Error(`exited ${code}: ${out}`)));
+    });
+    try {
+      const stats = await get(`http://127.0.0.1:${port}/stats`, { authorization: 'Bearer t' });
+      assert.deepEqual(stats.body, { total: 2, claimed: 0, remaining: 2 });
+    } finally { child.kill(); }
   });
 });

@@ -8,9 +8,11 @@
 // Env: POOL_FILE, POOL_LOAD (default 50), EVENT_CODE, DEVICE_SALT, STATS_TOKEN, STATE_FILE,
 //      STATE_IMPORT (optional), PORT (default 8080).
 
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // ---------- pool ----------
 
@@ -128,4 +130,138 @@ export function createLockout({ maxFailures, minutes, now = Date.now }) {
       return entry.count >= maxFailures;
     },
   };
+}
+
+// ---------- HTTP ----------
+
+const MAX_BODY = 1024;
+const MAX_DEVICE = 128;
+
+function safeEqual(a, b) {
+  const x = Buffer.from(String(a));
+  const y = Buffer.from(String(b));
+  return x.length === y.length && timingSafeEqual(x, y);
+}
+
+function readBody(req) {
+  return new Promise((resolve) => {
+    let size = 0;
+    let tooBig = false;
+    const chunks = [];
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > MAX_BODY) { tooBig = true; chunks.length = 0; return; } // keep draining so the 400 can be sent
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(tooBig ? null : Buffer.concat(chunks).toString('utf8')));
+    req.on('error', () => resolve(null));
+  });
+}
+
+export function createDispenser(config) {
+  const {
+    pool, eventCode, deviceSalt, statsToken, claims, publicDir, log = console.log,
+    ipBucket = createBucket({ capacity: 120, perMinute: 120 }),
+    globalBucket = createBucket({ capacity: 600, perMinute: 600 }),
+    lockout = createLockout({ maxFailures: 10, minutes: 5 }),
+  } = config;
+  const page = () => readFileSync(path.join(publicDir, 'index.html'));
+
+  function json(res, status, body) {
+    res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(JSON.stringify(body));
+    return status;
+  }
+
+  function authorized(req) {
+    const header = req.headers.authorization ?? '';
+    return header.startsWith('Bearer ') && safeEqual(header.slice(7), statsToken);
+  }
+
+  async function handleClaim(req, res, ip) {
+    const raw = await readBody(req);
+    let body;
+    try { body = raw === null ? null : JSON.parse(raw); } catch { body = null; }
+    if (!body || typeof body !== 'object') return { status: json(res, 400, { error: 'bad_request' }) };
+    const { code, device } = body;
+    if (typeof code !== 'string' || typeof device !== 'string' || !device || device.length > MAX_DEVICE) {
+      return { status: json(res, 400, { error: 'bad_request' }) };
+    }
+    const deviceHash = hashDevice(deviceSalt, device);
+    const tag = `device=${deviceHash.slice(0, 8)}`;
+    if (!ipBucket.take(ip)) return { status: json(res, 429, { error: 'throttled' }), tag };
+    if (lockout.locked(deviceHash)) return { status: json(res, 429, { error: 'throttled' }), tag };
+    if (!safeEqual(code, eventCode)) {
+      lockout.fail(deviceHash);
+      return { status: json(res, 403, { error: 'wrong_code' }), tag };
+    }
+    const result = claims.claim(deviceHash, pool);
+    if (result.status === 'issued') return { status: json(res, 201, { key: result.key, id: result.id }), tag: `${tag} id=${result.id}` };
+    if (result.status === 'already_claimed') return { status: json(res, 409, { error: 'already_claimed' }), tag };
+    return { status: json(res, 503, { error: 'pool_empty' }), tag };
+  }
+
+  return createServer(async (req, res) => {
+    const ip = req.headers['cf-connecting-ip'] ?? req.socket.remoteAddress ?? 'unknown';
+    const url = (req.url ?? '/').split('?')[0];
+    let status;
+    let tag = '';
+    try {
+      if (!globalBucket.take('*')) {
+        status = json(res, 429, { error: 'throttled' });
+      } else if (req.method === 'GET' && url === '/healthz') {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.end('ok');
+        status = 200;
+      } else if (req.method === 'GET' && url === '/') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(page());
+        status = 200;
+      } else if (req.method === 'POST' && url === '/claim') {
+        ({ status, tag = '' } = await handleClaim(req, res, ip));
+      } else if (req.method === 'GET' && (url === '/stats' || url === '/state')) {
+        if (!authorized(req)) status = json(res, 401, { error: 'unauthorized' });
+        else status = json(res, 200, url === '/stats' ? claims.stats(pool) : claims.export());
+      } else {
+        status = json(res, 404, { error: 'not_found' });
+      }
+    } catch (err) {
+      status = res.headersSent ? res.statusCode : json(res, 500, { error: 'internal' });
+      log(`error: ${err.message}`);
+    }
+    if (url !== '/healthz') log(`${req.method} ${url} ${status} ip=${ip} ${tag}`.trim());
+  });
+}
+
+// ---------- main ----------
+
+function requireEnv(name) {
+  const value = process.env[name];
+  if (!value) {
+    console.error(`${name} is not set`);
+    process.exit(2);
+  }
+  return value;
+}
+
+function main() {
+  const poolFile = requireEnv('POOL_FILE');
+  const eventCode = requireEnv('EVENT_CODE');
+  const deviceSalt = requireEnv('DEVICE_SALT');
+  const statsToken = requireEnv('STATS_TOKEN');
+  const stateFile = requireEnv('STATE_FILE');
+  const load = Number(process.env.POOL_LOAD ?? 50);
+  const port = Number(process.env.PORT ?? 8080);
+  const pool = loadPool(readFileSync(poolFile, 'utf8'), load);
+  const claims = createClaims({ stateFile, importFile: process.env.STATE_IMPORT || undefined });
+  const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
+  const server = createDispenser({ pool, eventCode, deviceSalt, statsToken, claims, publicDir });
+  server.listen(port, () => {
+    const stats = claims.stats(pool);
+    console.log(`dispenser listening on port ${server.address().port}: ${stats.total} keys loaded, ${stats.claimed} already claimed`);
+  });
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main();
 }
