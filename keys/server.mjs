@@ -268,7 +268,11 @@ function main() {
   const port = Number(process.env.PORT ?? 8080);
   const pool = loadPool(readFileSync(poolFile, 'utf8'), load);
   const claims = createClaims({ stateFile, importFile: process.env.STATE_IMPORT || undefined });
-  const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
+  // Use the path we were started with, not the resolved real path: a Kubernetes ConfigMap mounts
+  // files through a `..data` symlink that is swapped on every update, and the old real directory
+  // disappears. Reading through the symlink picks up the new page without a restart.
+  const entry = process.argv[1] ? path.resolve(process.argv[1]) : fileURLToPath(import.meta.url);
+  const publicDir = path.join(path.dirname(entry), 'public');
   const server = createDispenser({ pool, eventCode, deviceSalt, statsToken, claims, publicDir });
   server.listen(port, () => {
     const stats = claims.stats(pool);

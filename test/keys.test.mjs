@@ -444,6 +444,40 @@ describe('dispenser HTTP', () => {
     assert.equal(r.code, 'listening', `server exited with ${r.code}: ${r.out}`);
   });
 
+  test('the page survives a ConfigMap-style swap of the real directory behind the entrypoint symlink', async () => {
+    // Kubernetes mounts a ConfigMap as /app/..data -> ..<timestamp>/ and updates by swapping ..data.
+    const dir = tmp();
+    const { mkdirSync: mkd, symlinkSync, cpSync, rmSync, renameSync: rn, readFileSync: rf } = await import('node:fs');
+    const v1 = path.join(dir, '..v1'); const v2 = path.join(dir, '..v2');
+    for (const v of [v1, v2]) { mkd(path.join(v, 'public'), { recursive: true }); cpSync(SERVER, path.join(v, 'server.mjs')); }
+    writeFileSync(path.join(v1, 'public', 'index.html'), '<p>version one</p>');
+    writeFileSync(path.join(v2, 'public', 'index.html'), '<p>version two</p>');
+    symlinkSync('..v1', path.join(dir, '..data'));
+    symlinkSync('..data/server.mjs', path.join(dir, 'server.mjs'));
+    symlinkSync('..data/public', path.join(dir, 'public'));
+    const poolFile = path.join(dir, 'pool.json');
+    writeFileSync(poolFile, JSON.stringify({ keys: POOL3 }));
+    const child = spawn(process.execPath, [path.join(dir, 'server.mjs')], {
+      env: { ...process.env, POOL_FILE: poolFile, EVENT_CODE: 'tulip', DEVICE_SALT: 's', STATS_TOKEN: 't', STATE_FILE: path.join(dir, 's.json'), PORT: '0' },
+    });
+    let out = '';
+    const port = await new Promise((resolve, reject) => {
+      child.stdout.on('data', (d) => { out += d; const m = /listening on port (\d+)/.exec(out); if (m) resolve(Number(m[1])); });
+      child.stderr.on('data', (d) => { out += d; });
+      child.on('exit', (code) => reject(new Error(`exited ${code}: ${out}`)));
+    });
+    try {
+      assert.equal(await (await fetch(`http://127.0.0.1:${port}/`)).text(), '<p>version one</p>');
+      // swap like the kubelet does: new ..data symlink, old directory removed
+      symlinkSync('..v2', path.join(dir, '..data_tmp'));
+      rn(path.join(dir, '..data_tmp'), path.join(dir, '..data'));
+      rmSync(v1, { recursive: true });
+      const res = await fetch(`http://127.0.0.1:${port}/`);
+      assert.equal(res.status, 200);
+      assert.equal(await res.text(), '<p>version two</p>');
+    } finally { child.kill(); }
+  });
+
   test('main serves on PORT with POOL_LOAD keys', async () => {
     const dir = tmp();
     const poolFile = path.join(dir, 'pool.json');
