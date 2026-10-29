@@ -19,7 +19,7 @@ You do not work inside this repo. Create a project folder of your own, copy `sta
 | `demo/` | A finished Prompt Pantry built from the specs (all three phases), for reference and for the live demo |
 | `setup.mjs` | Pre-workshop setup and check script (see [Before you arrive](#before-you-arrive)) |
 | `test/` | Tests for `setup.mjs`, including Docker sandbox runs |
-| `bench/task-board/` | Benchmarks for coding models: a build-from-spec benchmark and a task-type lab (single-file fix, multi-file debug, cross-file feature, migration, contract change, code review) with hidden tests, scorers and a token and cost audit. Runs Claude agents or any OpenAI-compatible model (free-tier or self-hosted). See its [README](bench/task-board/README.md) and the [lab README](bench/task-board/lab/README.md) |
+| `bench/task-board/` | Benchmarks for coding models: a build-from-spec benchmark and a task-type lab (single-file fix, multi-file debug, cross-file feature, migration, contract change, code review) with hidden tests, scorers and a token and cost audit. Runs Claude agents or any OpenAI-compatible model (free-tier or self-hosted). See its [README](bench/task-board/README.md) and the [lab README](bench/task-board/lab/README.md). To run the model ladder in the workshop (cloud and local models, with time and cost), see [bench/task-board/lab/workshop/WORKSHOP.md](bench/task-board/lab/workshop/WORKSHOP.md) |
 | `harness/README.md` | Draft notes for connecting the DeepSeek harness to OpenRouter and local models, and for subagent models |
 | `.gitignore` | Excludes `node_modules`, build output, local env files and editor files |
 
@@ -47,6 +47,8 @@ The script works on macOS, Linux and Windows. It:
 - downloads the DeepSeek harness (about 900 MB, a few minutes), starts its web UI on `127.0.0.1:3080` (or the next free port up to 3089, if another app uses it) to check it works, then stops it
 - checks that the DeepSeek models are on OpenRouter and, if you have your own key, that it works and has credit (the key is never saved or printed)
 - installs the demo app and runs its tests, which also caches the packages you'll need in Stage 0
+- installs the scorer for the model ladder in `bench/task-board` (about 170 MB, skip with `--skip-bench`)
+- looks for a model server already running on your laptop (Ollama, LM Studio or llama.cpp) and lists its models
 - creates your workshop project at `~/prompt-pantry` with `specs/` and a first commit
 - says whether your laptop can handle the local stages
 

@@ -42,9 +42,9 @@ describe('parseArgs', () => {
   });
 
   test('reads every flag', () => {
-    const opts = parseArgs(['--project', '~/x', '--check', '-y', '--skip-harness', '--skip-demo', '--no-color']);
+    const opts = parseArgs(['--project', '~/x', '--check', '-y', '--skip-harness', '--skip-demo', '--skip-bench', '--no-color']);
     assert.equal(opts.project, path.join(os.homedir(), 'x'));
-    assert.deepEqual([opts.check, opts.yes, opts.skipHarness, opts.skipDemo, opts.color], [true, true, true, true, false]);
+    assert.deepEqual([opts.check, opts.yes, opts.skipHarness, opts.skipDemo, opts.skipBench, opts.color], [true, true, true, true, true, false]);
     assert.equal(parseArgs(['--project=rel']).project, path.resolve('rel'));
   });
 
@@ -104,6 +104,7 @@ function makeEnv({ claude, gitIdentity = true, extra = {} } = {}) {
     GIT_CONFIG_NOSYSTEM: '1',
     NO_COLOR: '1',
     WORKSHOP_OPENROUTER_API: apiBase,
+    WORKSHOP_LOCAL_URLS: '', // do not probe the real Ollama or LM Studio ports
     npm_config_cache: process.env.npm_config_cache ?? path.join(os.homedir(), '.npm'),
     ...extra,
   };
@@ -121,7 +122,7 @@ function runSetup(args, env) {
   });
 }
 
-const FAST = ['--skip-harness', '--skip-demo'];
+const FAST = ['--skip-harness', '--skip-demo', '--skip-bench'];
 
 describe('setup.mjs end to end (no network)', posixOnly, () => {
   test('--yes creates the project with specs, .gitignore and one commit', async () => {
@@ -219,6 +220,37 @@ describe('setup.mjs end to end (no network)', posixOnly, () => {
     }
   });
 
+  test('finds a local model server and lists its models', async () => {
+    const local = createServer((req, res) => {
+      res.setHeader('content-type', 'application/json');
+      res.end(req.url === '/v1/models' ? JSON.stringify({ data: [{ id: 'qwen3-coder:30b' }, { id: 'llama3.1:8b' }] }) : '{}');
+    });
+    await new Promise((resolve) => local.listen(0, '127.0.0.1', resolve));
+    try {
+      const base = `http://127.0.0.1:${local.address().port}/v1`;
+      const { env } = makeEnv({ claude: 'logged-in', extra: { WORKSHOP_LOCAL_URLS: base } });
+      const { code, out } = await runSetup(['--check', ...FAST], env);
+      assert.equal(code, 0, out);
+      assert.match(out, /✔ Local server at http:\/\/127\.0\.0\.1:\d+\/v1 — qwen3-coder:30b, llama3\.1:8b/);
+      assert.match(out, /ladder\.mjs run <task> --model <label> --local/);
+    } finally {
+      local.close();
+    }
+  });
+
+  test('no local model server is information, not a problem', async () => {
+    const { env } = makeEnv({ claude: 'logged-in' });
+    const { code, out } = await runSetup(['--check', ...FAST], env);
+    assert.equal(code, 0, out);
+    assert.match(out, /• Local model server — none found/);
+  });
+
+  test('--skip-bench leaves the ladder scorer alone', async () => {
+    const { env } = makeEnv({ claude: 'logged-in' });
+    const { out } = await runSetup(['--check', ...FAST], env);
+    assert.match(out, /• Model ladder scorer — skipped \(--skip-bench\)/);
+  });
+
   test('unreachable OpenRouter is a warning, not a failure', async () => {
     const { env } = makeEnv({ claude: 'logged-in', extra: { WORKSHOP_OPENROUTER_API: 'http://127.0.0.1:1/api/v1' } });
     const { code, out } = await runSetup(['--check', ...FAST], env);
@@ -240,7 +272,7 @@ describe('setup.mjs end to end (no network)', posixOnly, () => {
     if (!server) return t.skip('port 3080 is busy on this machine');
     try {
       const { env } = makeEnv({ claude: 'logged-in' });
-      const { code, out } = await runSetup(['--check', '--skip-demo'], env);
+      const { code, out } = await runSetup(['--check', '--skip-demo', '--skip-bench'], env);
       assert.equal(code, 0, out);
       assert.match(out, /already running on 127\.0\.0\.1:3080/);
       assert.doesNotMatch(out, /Downloading/);
@@ -264,7 +296,7 @@ const port = Number(args[args.indexOf('--port') + 1]);
 require('node:http').createServer((req, res) => { res.statusCode = 401; res.end('dsh web authentication required'); }).listen(port, '127.0.0.1');
 `);
       chmodSync(path.join(home, 'stub-bin', 'npx'), 0o755);
-      const { code, out } = await runSetup(['--check', '--skip-demo'], env);
+      const { code, out } = await runSetup(['--check', '--skip-demo', '--skip-bench'], env);
       assert.equal(code, 0, out);
       assert.match(out, /Port 3080 is used by another app, so the harness will use port 3081/);
       assert.match(out, /started on 127\.0\.0\.1:3081, then stopped again/);
@@ -280,7 +312,7 @@ require('node:http').createServer((req, res) => { res.statusCode = 401; res.end(
     try {
       if (servers.includes(null)) return t.skip('ports 3080-3089 are busy on this machine');
       const { env } = makeEnv({ claude: 'logged-in' });
-      const { code, out } = await runSetup(['--check', '--skip-demo'], env);
+      const { code, out } = await runSetup(['--check', '--skip-demo', '--skip-bench'], env);
       assert.equal(code, 1, out);
       assert.match(out, /ports 3080-3089 are all used by other apps/);
       assert.match(out, /rerun: node setup\.mjs/);

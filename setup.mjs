@@ -2,7 +2,8 @@
 // Workshop setup for "Inference at the Edge of Your IDE".
 //
 // Checks your machine, pre-downloads the DeepSeek harness, checks OpenRouter,
-// runs the demo app's tests and creates your workshop project folder.
+// runs the demo app's tests, installs the model-ladder scorer, looks for a local
+// model server and creates your workshop project folder.
 // Uses only Node built-ins, so it runs before anything else is installed.
 //
 //   node setup.mjs                 interactive setup
@@ -36,6 +37,7 @@ Options:
   --yes, -y         Accept the default answer to every question
   --skip-harness    Skip downloading and starting the DeepSeek harness
   --skip-demo       Skip installing and testing the demo app
+  --skip-bench      Skip installing the scorer for the model ladder (bench/task-board, about 170 MB)
   --no-color        Plain output
   --help, -h        Show this help
 
@@ -52,6 +54,7 @@ export function parseArgs(argv) {
     yes: false,
     skipHarness: false,
     skipDemo: false,
+    skipBench: false,
     color: process.stdout.isTTY && !process.env.NO_COLOR,
     help: false,
   };
@@ -67,6 +70,7 @@ export function parseArgs(argv) {
     else if (arg === '--yes' || arg === '-y') opts.yes = true;
     else if (arg === '--skip-harness') opts.skipHarness = true;
     else if (arg === '--skip-demo') opts.skipDemo = true;
+    else if (arg === '--skip-bench') opts.skipBench = true;
     else if (arg === '--no-color') opts.color = false;
     else if (arg === '--help' || arg === '-h') opts.help = true;
     else throw new Error(`Unknown option: ${arg}`);
@@ -593,6 +597,65 @@ function checkDemo(opts) {
     lastLines(test.stdout || test.stderr));
 }
 
+// Installs the scorer for the model ladder (bench/task-board). In check mode it only looks.
+function checkBench(opts) {
+  section('Model ladder (scores the models you compare)');
+  if (opts.skipBench) {
+    record('info', 'Model ladder scorer', 'skipped (--skip-bench)');
+    return;
+  }
+  const benchDir = path.join(REPO_DIR, 'bench', 'task-board');
+  if (!existsSync(path.join(benchDir, 'package.json'))) {
+    record('fail', 'Model ladder scorer', `not found at ${benchDir}`, 'Run this script from the cloned workshop repo.');
+    return;
+  }
+  const installed = () => existsSync(path.join(benchDir, 'node_modules', 'vitest'));
+  if (!installed() && !opts.check) {
+    console.log(dim('  Installing the scorer dependencies (about 170 MB)...'));
+    const install = run('npm', ['ci', '--no-audit', '--no-fund'], { cwd: benchDir, timeout: 600_000 });
+    if (!install.ok) {
+      record('fail', 'Model ladder scorer', `npm ci failed (exit ${install.code})`, lastLines(install.stderr || install.stdout));
+      return;
+    }
+  }
+  if (installed()) record('ok', 'Model ladder scorer', 'installed');
+  else record('warn', 'Model ladder scorer', 'not installed yet', `Run: cd bench/task-board && npm ci`);
+}
+
+// Looks for a model server already running on this laptop. Read-only, and only ever asks 127.0.0.1.
+// WORKSHOP_LOCAL_URLS (comma-separated, ending in /v1) replaces the usual addresses, for tests.
+const LOCAL_SERVERS = [
+  ['Ollama', 'http://127.0.0.1:11434/v1'],
+  ['LM Studio', 'http://127.0.0.1:1234/v1'],
+  ['llama.cpp', 'http://127.0.0.1:8080/v1'],
+];
+
+async function checkLocalModels() {
+  section('Local models (only needed for the local comparison)');
+  const servers = process.env.WORKSHOP_LOCAL_URLS === undefined
+    ? LOCAL_SERVERS
+    : process.env.WORKSHOP_LOCAL_URLS.split(',').filter(Boolean).map((url) => ['Local server', url]);
+  let found = 0;
+  for (const [name, base] of servers) {
+    try {
+      const response = await fetch(`${base}/models`, { signal: AbortSignal.timeout(2000) });
+      const ids = ((await response.json().catch(() => null))?.data ?? []).map((m) => m.id).filter(Boolean);
+      if (!response.ok) continue;
+      found += 1;
+      const shown = ids.slice(0, 5).join(', ') + (ids.length > 5 ? `, and ${ids.length - 5} more` : '');
+      record('ok', `${name} at ${base}`, ids.length ? shown : 'running, no models loaded yet');
+    } catch {
+      // nothing listening here
+    }
+  }
+  if (found === 0) {
+    record('info', 'Local model server', 'none found',
+      'Start Ollama, LM Studio or llama.cpp with a model that supports tool calls. See harness/README.md.');
+  } else {
+    console.log(dim('      Compare it with: node bench/task-board/lab/workshop/ladder.mjs run <task> --model <label> --local --id <model name>'));
+  }
+}
+
 const stripAnsi = (text) => text.replace(/\x1b\[[0-9;]*m/g, '');
 const lastLines = (text, n = 8) => stripAnsi(text).split('\n').slice(-n).map((l) => dim(l)).join('\n');
 
@@ -696,6 +759,8 @@ async function main() {
   const harness = nodeOk ? await checkHarness(opts) : undefined;
   await checkOpenRouter(opts);
   if (nodeOk) checkDemo(opts);
+  if (nodeOk) checkBench(opts);
+  await checkLocalModels();
   await createProject(opts, gitOk);
   const code = printSummary(opts);
   await openHarness(opts, harness);

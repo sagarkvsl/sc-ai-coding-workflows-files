@@ -29,7 +29,7 @@ for v in "${VERSIONS[@]}"; do
     grep -E "^# (tests|pass|fail)" /tmp/unit.log
 
     # A participant with no Git identity yet: specs are copied, the commit is explained.
-    node setup.mjs --yes --no-color --skip-harness --skip-demo --project /root/no-identity > /tmp/no-id.log || true
+    node setup.mjs --yes --no-color --skip-harness --skip-demo --skip-bench --project /root/no-identity > /tmp/no-id.log || true
     grep -q "Git identity — user.name or user.email not set" /tmp/no-id.log
     test -f /root/no-identity/specs/roadmap.md
 
@@ -51,7 +51,7 @@ for v in "${VERSIONS[@]}"; do
     sleep 2
     if (exec 3<>/dev/tcp/127.0.0.1/3080) 2>/dev/null; then echo "harness still running"; exit 1; fi
     # A second run is safe.
-    node setup.mjs --yes --no-color --skip-harness --skip-demo > /tmp/again.log
+    node setup.mjs --yes --no-color --skip-harness --skip-demo --skip-bench > /tmp/again.log
     grep -q "already set up" /tmp/again.log
     echo "SANDBOX OK"
   '; then echo "Node $v: passed"; else FAILED+=("$v"); echo "Node $v: FAILED"; fi
@@ -61,7 +61,7 @@ if [ "$#" -eq 0 ]; then
   for old in 18 20; do
     echo "=== Node $old (must be rejected) ==="
     if in_container "node:$old-bookworm" "
-      set +e; node setup.mjs --check --no-color --skip-harness --skip-demo > /tmp/old.log 2>&1; code=\$?; set -e
+      set +e; node setup.mjs --check --no-color --skip-harness --skip-demo --skip-bench > /tmp/old.log 2>&1; code=\$?; set -e
       cat /tmp/old.log
       test \"\$code\" -eq 1
       grep -q '✖ Node.js — v$old' /tmp/old.log
