@@ -4,6 +4,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { createClient } from '../keys/openrouter.mjs';
 import { mint, parseMintArgs } from '../keys/mint-keys.mjs';
 import { revoke } from '../keys/revoke-keys.mjs';
+import { createBucket, createClaims, createLockout, hashDevice, loadPool } from '../keys/server.mjs';
 
 const MINT = fileURLToPath(new URL('../keys/mint-keys.mjs', import.meta.url));
 const REVOKE = fileURLToPath(new URL('../keys/revoke-keys.mjs', import.meta.url));
@@ -169,5 +171,87 @@ describe('revoke-keys', () => {
     assert.match(r.out, /failed 1/);
     const ok = await runNode(REVOKE, ['--pool', file], { OPENROUTER_MANAGEMENT_KEY: MGMT, WORKSHOP_OPENROUTER_API: baseUrl });
     assert.equal(ok.code, 0, ok.err);
+  });
+});
+
+// ---------- dispenser core ----------
+
+describe('dispenser core', () => {
+  test('loadPool takes the first N by id and rejects bad pools', () => {
+    const json = JSON.stringify({ keys: [{ id: 2, key: 'b' }, { id: 1, key: 'a' }, { id: 3, key: 'c' }] });
+    assert.deepEqual(loadPool(json, 2), [{ id: 1, key: 'a' }, { id: 2, key: 'b' }]);
+    assert.equal(loadPool(json, 10).length, 3);
+    assert.throws(() => loadPool(JSON.stringify({ keys: [{ id: 1, key: 'a' }, { id: 1, key: 'b' }] }), 2), /duplicate id 1/);
+    assert.throws(() => loadPool(JSON.stringify({ keys: [{ id: 1 }] }), 1), /key 1 has no key/);
+    assert.throws(() => loadPool('not json', 1), /pool/);
+    assert.throws(() => loadPool(JSON.stringify({}), 1), /pool/);
+  });
+
+  test('hashDevice is salted sha256', () => {
+    assert.equal(hashDevice('s', 'd'), createHash('sha256').update('s:d').digest('hex'));
+    assert.notEqual(hashDevice('s', 'd'), hashDevice('t', 'd'));
+  });
+
+  test('claims issue once per device, then already_claimed, then pool_empty', () => {
+    const stateFile = path.join(tmp(), 'state.json');
+    const claims = createClaims({ stateFile, log: () => {} });
+    const pool = [{ id: 1, key: 'k1' }, { id: 2, key: 'k2' }];
+    assert.deepEqual(claims.claim('A', pool), { status: 'issued', id: 1, key: 'k1' });
+    assert.deepEqual(claims.claim('A', pool), { status: 'already_claimed' });
+    assert.equal(claims.claim('B', pool).id, 2);
+    assert.deepEqual(claims.claim('C', pool), { status: 'pool_empty' });
+    assert.deepEqual(claims.stats(pool), { total: 2, claimed: 2, remaining: 0 });
+    assert.deepEqual(claims.export(), { claims: { A: 1, B: 2 } });
+    assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')), { claims: { A: 1, B: 2 } });
+    assert.ok(!readFileSync(stateFile, 'utf8').includes('k1'));
+  });
+
+  test('claims reload from stateFile and from importFile', () => {
+    const dir = tmp();
+    const stateFile = path.join(dir, 'state.json');
+    const pool = [{ id: 1, key: 'k1' }, { id: 2, key: 'k2' }, { id: 3, key: 'k3' }];
+    createClaims({ stateFile, log: () => {} }).claim('A', pool);
+    const again = createClaims({ stateFile, log: () => {} });
+    assert.deepEqual(again.claim('A', pool), { status: 'already_claimed' });
+    assert.equal(again.claim('B', pool).id, 2);
+
+    const importFile = path.join(dir, 'import.json');
+    writeFileSync(importFile, JSON.stringify({ claims: { X: 1, Y: 3 } }));
+    const imported = createClaims({ stateFile: path.join(dir, 'fresh.json'), importFile, log: () => {} });
+    assert.deepEqual(imported.stats(pool), { total: 3, claimed: 2, remaining: 1 });
+    assert.equal(imported.claim('Z', pool).id, 2);
+    assert.deepEqual(imported.claim('X', pool), { status: 'already_claimed' });
+  });
+
+  test('an unwritable stateFile logs once and still issues', () => {
+    const logs = [];
+    const claims = createClaims({ stateFile: '/nonexistent/dir/state.json', log: (m) => logs.push(m) });
+    const pool = [{ id: 1, key: 'k1' }, { id: 2, key: 'k2' }];
+    assert.equal(claims.claim('A', pool).status, 'issued');
+    assert.equal(claims.claim('B', pool).status, 'issued');
+    assert.equal(logs.filter((m) => /state/.test(m)).length, 1);
+  });
+
+  test('bucket allows capacity then refuses, and refills over time', () => {
+    let now = 0;
+    const bucket = createBucket({ capacity: 2, perMinute: 60, now: () => now });
+    assert.equal(bucket.take('x'), true);
+    assert.equal(bucket.take('x'), true);
+    assert.equal(bucket.take('x'), false);
+    assert.equal(bucket.take('y'), true);
+    now = 1000;
+    assert.equal(bucket.take('x'), true);
+  });
+
+  test('lockout trips after maxFailures and clears after the window', () => {
+    let now = 0;
+    const lockout = createLockout({ maxFailures: 10, minutes: 5, now: () => now });
+    for (let i = 0; i < 9; i++) lockout.fail('d');
+    assert.equal(lockout.locked('d'), false);
+    lockout.fail('d');
+    assert.equal(lockout.locked('d'), true);
+    assert.equal(lockout.locked('e'), false);
+    now = 5 * 60 * 1000 + 1;
+    assert.equal(lockout.locked('d'), false);
   });
 });
