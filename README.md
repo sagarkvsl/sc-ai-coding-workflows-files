@@ -44,7 +44,7 @@ The script works on macOS, Linux and Windows. It:
 - checks Git, your Git identity, Node.js, npm and your editor
 - checks Claude Code is installed and signed in, and offers to install it
 - downloads the DeepSeek harness (about 900 MB, a few minutes), starts its web UI on `127.0.0.1:3080` to check it works, then stops it
-- checks that the DeepSeek models are on OpenRouter and, if you have your own key, that it works and has credit (the key is never saved or printed)
+- checks that the DeepSeek models are on OpenRouter and, if you have your own key, that it works and has credit (your own key is never saved or printed)
 - installs the demo app and runs its tests, which also caches the packages you'll need in Stage 0
 - creates your workshop project at `~/prompt-pantry` with `specs/` and a first commit
 - says whether your laptop can handle the local stages
@@ -56,9 +56,17 @@ It ends with a summary. Fix anything marked ✖ before the workshop. Items marke
 | What | Who provides it |
 |---|---|
 | **A frontier coding agent**: Claude Code with a paid Claude plan or Anthropic API key | **You.** We demo Stage 1 in Claude Code. If you already pay for another frontier-model agent (Codex, Cursor, Gemini CLI and so on), you can follow Stage 1 with that instead. We can't provide this access. |
-| **DeepSeek V4 Pro and V4 Flash on OpenRouter**, for Stages 2 and 3 | **We do, if you need it.** Bring your own [OpenRouter key](https://openrouter.ai/keys) with about $10 of credit if you can, which covers the whole workshop. Without one, ask the speakers at the start of the session for a workshop key with limited credit. |
+| **DeepSeek V4 Pro and V4 Flash on OpenRouter**, for Stages 2 and 3 | **We do, if you need it.** Bring your own [OpenRouter key](https://openrouter.ai/keys) with about $10 of credit if you can, which covers the whole workshop. Without one, get a workshop key at the session (below). |
 
 Copy an OpenRouter key when you create it, because you can't view it again. Never commit it to Git.
+
+**Getting a workshop key at the session.** The speakers show a URL and say a code. Either open the URL in a browser, or run:
+
+```bash
+node setup.mjs --claim <url> --code <word>
+```
+
+Use one path, not both. Each key is tied to your device, capped at $10 and expires the same day. The script saves it to `~/.workshop/openrouter.env` (readable only by you); run `source ~/.workshop/openrouter.env` before starting the harness, and delete the file after the event.
 
 ### 4. Also install
 

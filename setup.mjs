@@ -7,13 +7,16 @@
 //
 //   node setup.mjs                 interactive setup
 //   node setup.mjs --check         check only: change nothing, ask nothing
+//   node setup.mjs --claim <url>   claim-only: get a workshop OpenRouter key from the speakers' dispenser
 //   node setup.mjs --help          all options
 //
-// Your OpenRouter key is only ever sent to openrouter.ai to check it.
-// This script never writes it to disk.
+// Your own OpenRouter key is only ever sent to openrouter.ai to check it, and is never written to disk.
+// A workshop key claimed with --claim is saved to ~/.workshop/openrouter.env (mode 0600) so the
+// harness can use it. Delete that file after the event.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,12 +29,15 @@ const HARNESS_PACKAGE = '@deepseek-ai/dsh';
 const HARNESS_PORT = 3080;
 const OPENROUTER_API = process.env.WORKSHOP_OPENROUTER_API ?? 'https://openrouter.ai/api/v1';
 const DEEPSEEK_MODELS = ['deepseek/deepseek-v4-pro', 'deepseek/deepseek-v4-flash'];
+export const KEY_FILE = path.join(os.homedir(), '.workshop', 'openrouter.env');
 
 const HELP = `Usage: node setup.mjs [options]
 
 Options:
   --project <dir>   Where to create your workshop project (default: ~/prompt-pantry)
   --check           Check only. Create nothing, install nothing, ask nothing
+  --claim <url>     Claim-only: get a workshop OpenRouter key from the speakers' page and save it
+  --code <word>     The event code the speakers announce (with --claim)
   --yes, -y         Accept the default answer to every question
   --skip-harness    Skip downloading and starting the DeepSeek harness
   --skip-demo       Skip installing and testing the demo app
@@ -40,6 +46,7 @@ Options:
 
 Environment:
   OPENROUTER_API_KEY   Checked without a prompt if set. Never written to disk.
+  WORKSHOP_CODE        Same as --code.
 `;
 
 // ---------- arguments ----------
@@ -53,6 +60,8 @@ export function parseArgs(argv) {
     skipDemo: false,
     color: process.stdout.isTTY && !process.env.NO_COLOR,
     help: false,
+    claim: null,
+    code: process.env.WORKSHOP_CODE || null,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -62,6 +71,14 @@ export function parseArgs(argv) {
       opts.project = path.resolve(value.replace(/^~(?=$|[\\/])/, os.homedir()));
     } else if (arg.startsWith('--project=')) {
       opts.project = path.resolve(arg.slice(10).replace(/^~(?=$|[\\/])/, os.homedir()));
+    } else if (arg === '--claim') {
+      const value = argv[++i];
+      if (!value) throw new Error('--claim needs the URL the speakers show');
+      opts.claim = value.replace(/\/+$/, '');
+    } else if (arg === '--code') {
+      const value = argv[++i];
+      if (!value) throw new Error('--code needs the event code');
+      opts.code = value;
     } else if (arg === '--check') opts.check = true;
     else if (arg === '--yes' || arg === '-y') opts.yes = true;
     else if (arg === '--skip-harness') opts.skipHarness = true;
@@ -190,6 +207,100 @@ async function askSecret(opts, question) {
   const answer = await new Promise((resolve) => r.question(`  ${question} `, resolve));
   r._writeToOutput = write;
   return answer.trim();
+}
+
+// ---------- workshop key ----------
+
+// A stable, non-reversible identifier for this machine. Only its hash leaves the laptop,
+// and the dispenser hashes it again with a per-event salt before storing it.
+export function deviceId() {
+  let raw = '';
+  try {
+    if (process.platform === 'linux' && existsSync('/etc/machine-id')) raw = readFileSync('/etc/machine-id', 'utf8').trim();
+    else if (process.platform === 'darwin') raw = /"IOPlatformUUID" = "([^"]+)"/.exec(run('ioreg', ['-rd1', '-c', 'IOPlatformExpertDevice']).stdout)?.[1] ?? '';
+    else if (IS_WINDOWS) raw = /MachineGuid\s+REG_SZ\s+(\S+)/.exec(run('reg', ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid']).stdout)?.[1] ?? '';
+  } catch { /* fall through */ }
+  if (!raw) raw = `${os.hostname()}|${os.homedir()}`;
+  return createHash('sha256').update(raw).digest('hex');
+}
+
+function savedKey() {
+  try {
+    return /^OPENROUTER_API_KEY=(.+)$/m.exec(readFileSync(KEY_FILE, 'utf8'))?.[1].trim() ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function saveKey(key) {
+  mkdirSync(path.dirname(KEY_FILE), { recursive: true, mode: 0o700 });
+  writeFileSync(KEY_FILE, `OPENROUTER_API_KEY=${key}\n`, { mode: 0o600 });
+}
+
+const USE_ONE_PATH = 'Use one path, not both. Claim here or on the speakers\' page, never twice.';
+
+async function claimKey(opts) {
+  section('Workshop key');
+  let code = opts.code;
+  if (!code && canAsk(opts)) code = await askSecret(opts, 'Event code (the speaker says it):');
+  if (!code) {
+    record('fail', 'Event code', 'missing', 'Pass --code <word> (the speaker says it) or set WORKSHOP_CODE.');
+    return;
+  }
+  let res;
+  try {
+    const response = await fetch(`${opts.claim}/claim`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code, device: deviceId() }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    res = { status: response.status, body: await response.json().catch(() => ({})) };
+  } catch (err) {
+    record('fail', 'Workshop key', `could not reach ${opts.claim} (${err.cause?.code ?? err.message})`,
+      'Check the URL on the slide and your connection.');
+    return;
+  }
+  if (res.status === 201 && res.body.key) {
+    const key = res.body.key;
+    await reportKey(key, 'workshop key');
+    saveKey(key);
+    console.log(`\n  Your key (shown once): ${key}\n`);
+    record('ok', 'Saved', KEY_FILE,
+      `Before starting the harness, run:  source ${KEY_FILE}\n` +
+      'Or paste the key under Settings → Models in the harness.\n' +
+      `${USE_ONE_PATH}\nDelete the file after the event.`);
+    return;
+  }
+  if (res.status === 409) {
+    record('info', 'Workshop key', 'already claimed on this device',
+      (existsSync(KEY_FILE) ? `Your key is in ${KEY_FILE}\n` : 'Lost it? Ask a speaker.\n') + USE_ONE_PATH);
+    return;
+  }
+  const reason = res.body?.error ?? `HTTP ${res.status}`;
+  const fixes = { wrong_code: 'Check the code with the speakers.', pool_empty: 'No keys left: ask a speaker.', throttled: 'Too many attempts. Wait a minute and retry.' };
+  record('fail', 'Workshop key', `refused (${reason})`, fixes[reason] ?? 'Ask a speaker.');
+}
+
+// Checks a key against OpenRouter and reports its credit. Never prints the key.
+async function reportKey(key, label) {
+  try {
+    const check = await fetchJson(`${OPENROUTER_API}/key`, { Authorization: `Bearer ${key}` });
+    if (check.status === 200) {
+      const data = check.body?.data ?? {};
+      const remaining = data.limit_remaining ?? null;
+      const credit = remaining === null ? 'no spending limit set' : `$${Number(remaining).toFixed(2)} left on this key`;
+      const low = remaining !== null && remaining < 2;
+      record(low ? 'warn' : 'ok', label, `valid, ${credit}`,
+        (low ? 'Add credit: about $10 covers the whole workshop.\n' : '') +
+        'Paste it into the harness under Settings → Models at the workshop.\nNever commit it to Git.');
+    } else {
+      record('warn', label, `rejected (HTTP ${check.status})`,
+        'Create a new one at https://openrouter.ai/keys, or use the workshop key we provide.');
+    }
+  } catch (err) {
+    record('warn', label, `could not check (${err.message})`);
+  }
 }
 
 // ---------- checks ----------
@@ -405,7 +516,7 @@ async function checkOpenRouter(opts) {
     return;
   }
 
-  let key = process.env.OPENROUTER_API_KEY?.trim() ?? '';
+  let key = process.env.OPENROUTER_API_KEY?.trim() || savedKey();
   if (!key && canAsk(opts)) {
     console.log(dim('  Have your own OpenRouter key? Paste it to check it (input is hidden, nothing is saved).'));
     console.log(dim('  No key? Press Enter. We provide a workshop key with limited credit at the session.'));
@@ -417,23 +528,7 @@ async function checkOpenRouter(opts) {
       'Want your own? https://openrouter.ai/keys, with about $10 of credit.');
     return;
   }
-  try {
-    const check = await fetchJson(`${OPENROUTER_API}/key`, { Authorization: `Bearer ${key}` });
-    if (check.status === 200) {
-      const data = check.body?.data ?? {};
-      const remaining = data.limit_remaining ?? null;
-      const credit = remaining === null ? 'no spending limit set' : `$${Number(remaining).toFixed(2)} left on this key`;
-      const low = remaining !== null && remaining < 2;
-      record(low ? 'warn' : 'ok', 'OpenRouter key', `valid, ${credit}`,
-        (low ? 'Add credit: about $10 covers the whole workshop.\n' : '') +
-        'Paste it into the harness under Settings → Models at the workshop.\nNever commit it to Git.');
-    } else {
-      record('warn', 'OpenRouter key', `rejected (HTTP ${check.status})`,
-        'Create a new one at https://openrouter.ai/keys, or use the workshop key we provide.');
-    }
-  } catch (err) {
-    record('warn', 'OpenRouter key', `could not check (${err.message})`);
-  }
+  await reportKey(key, 'OpenRouter key');
 }
 
 // Installs and tests the finished demo. Also fills the npm cache with the
@@ -530,7 +625,9 @@ function printSummary(opts) {
   console.log('  • Bring your own frontier model access: a paid Claude plan or Anthropic API key for');
   console.log('    Claude Code, or another frontier coding agent you already pay for.');
   console.log('  • DeepSeek models run through OpenRouter. Your own key (about $10 of credit) is best.');
-  console.log('    No key? We provide one with limited credit. Ask the speakers at the start.');
+  console.log('    No key? At the session the speakers show a URL and say a code: open the URL, or run');
+  console.log('    node setup.mjs --claim <url> --code <word>. One key per device, $10 cap, expires that day.');
+  console.log(`    A claimed key is saved to ${KEY_FILE} (mode 0600). Delete it after the event.`);
 
   if (!opts.check && existsSync(path.join(opts.project, 'specs'))) {
     console.log(`\n${bold('At the workshop')}`);
@@ -556,6 +653,13 @@ async function main() {
   useColor = opts.color;
 
   console.log(bold('Inference at the Edge of Your IDE: workshop setup'));
+  if (opts.claim) {
+    console.log(dim(`Claim mode: getting a workshop key from ${opts.claim}. Nothing else is installed or created.`));
+    const ok = checkNode();
+    if (ok) await claimKey(opts);
+    rl?.close();
+    return printSummary(opts);
+  }
   console.log(dim(opts.check ? 'Check mode: nothing will be created or installed.' : `Project folder: ${opts.project}`));
 
   checkSystem();
