@@ -385,6 +385,25 @@ describe('dispenser HTTP', () => {
     } finally { close(); }
   });
 
+  test('GET / serves the claim page with the fixed copy', async () => {
+    const { url, close } = await startDispenser();
+    try {
+      const res = await fetch(`${url}/`);
+      const html = await res.text();
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('content-type'), 'text/html; charset=utf-8');
+      assert.match(html, /You already have a key on this device\. Ask a speaker if you lost it\./);
+      assert.match(html, /Use one path, not both\./);
+      assert.match(html, /node setup\.mjs --claim/);
+      assert.match(html, /fetch\('claim'/);
+      assert.match(html, /Wrong event code\./);
+      assert.match(html, /No keys left\. Ask a speaker\./);
+      assert.match(html, /Too many attempts\. Wait a minute\./);
+      assert.ok(!/brevo/i.test(html));
+      assert.ok(!/<script src=|<link /.test(html), 'page must be self-contained');
+    } finally { close(); }
+  });
+
   test('main exits 2 naming a missing env var', async () => {
     const dir = tmp();
     const poolFile = path.join(dir, 'pool.json');

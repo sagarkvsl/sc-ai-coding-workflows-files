@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workshop key</title>
+<style>
+  :root { color-scheme: light dark; --fg: #1b1b1f; --bg: #fafafa; --muted: #5f6368; --line: #d8d8de; --accent: #2b5fd9; --ok: #1e7f4f; --bad: #b3261e; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #ececf1; --bg: #121214; --muted: #a0a3ab; --line: #34343a; --accent: #7aa2ff; --ok: #5ccb8a; --bad: #ff8a80; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px 16px 48px; font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: var(--fg); background: var(--bg); }
+  main { max-width: 560px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  p.lead { color: var(--muted); margin: 0 0 24px; }
+  form { display: flex; gap: 8px; flex-wrap: wrap; }
+  input { flex: 1 1 200px; font: inherit; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: inherit; }
+  button { font: inherit; padding: 10px 16px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: default; }
+  .msg { margin-top: 16px; min-height: 1.5em; }
+  .msg.bad { color: var(--bad); }
+  .msg.ok { color: var(--ok); }
+  .result { margin-top: 24px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; }
+  .key { display: flex; gap: 8px; align-items: center; }
+  code { font: 14px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+  pre { margin: 8px 0 0; padding: 10px 12px; border-radius: 8px; background: rgba(127,127,127,.12); overflow-x: auto; }
+  pre code { word-break: normal; }
+  ol { padding-left: 20px; }
+  li { margin: 10px 0; }
+  .note { color: var(--muted); font-size: .9rem; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Get your workshop key</h1>
+  <p class="lead">One OpenRouter key per device, capped at $10, valid today only.</p>
+
+  <form id="form">
+    <input id="code" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="Event code (the speaker says it)" required>
+    <button id="go" type="submit">Get my key</button>
+  </form>
+  <div id="msg" class="msg" aria-live="polite"></div>
+  <p id="alt" class="note">Prefer the terminal? In the workshop repo run
+    <code id="cmd">node setup.mjs --claim &lt;this page's address&gt; --code &lt;event code&gt;</code>
+    instead of this page. Use one path, not both.</p>
+
+  <section id="claimed" class="result" hidden>
+    <p>You already have a key on this device. Ask a speaker if you lost it.</p>
+  </section>
+
+  <section id="result" class="result" hidden>
+    <p class="ok">Here is your key. It is shown once, so copy it now.</p>
+    <div class="key"><code id="key"></code><button id="copy" type="button">Copy</button></div>
+    <p>Then use it either way:</p>
+    <ol>
+      <li>In your shell, before starting the harness:
+        <pre><code>export OPENROUTER_API_KEY=<span id="key2"></span></code></pre>
+      </li>
+      <li>In the harness: Settings → Models → Add custom provider → paste it as the API key.</li>
+    </ol>
+    <p class="note">Never commit it to Git.</p>
+  </section>
+</main>
+<script>
+(function () {
+  var DEVICE = 'wk_device';
+  var CLAIMED = 'wk_claimed';
+  var $ = function (id) { return document.getElementById(id); };
+
+  function readCookie(name) {
+    var m = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+    return m ? decodeURIComponent(m[1]) : null;
+  }
+  function writeCookie(name, value) {
+    document.cookie = name + '=' + encodeURIComponent(value) + '; max-age=' + (60 * 60 * 24 * 7) + '; path=/; SameSite=Strict';
+  }
+  function store(name, value) {
+    try { localStorage.setItem(name, value); } catch (e) {}
+    writeCookie(name, value);
+  }
+  function load(name) {
+    var v = null;
+    try { v = localStorage.getItem(name); } catch (e) {}
+    return v || readCookie(name);
+  }
+  function randomHex(bytes) {
+    var a = new Uint8Array(bytes);
+    crypto.getRandomValues(a);
+    return Array.prototype.map.call(a, function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+  }
+
+  var device = load(DEVICE);
+  if (!device) { device = randomHex(32); store(DEVICE, device); }
+
+  $('cmd').textContent = 'node setup.mjs --claim ' + location.origin + ' --code <event code>';
+
+  if (load(CLAIMED)) {
+    $('form').hidden = true;
+    $('alt').hidden = true;
+    $('claimed').hidden = false;
+  }
+
+  var MESSAGES = {
+    wrong_code: 'Wrong event code.',
+    already_claimed: 'You already have a key on this device. Ask a speaker if you lost it.',
+    pool_empty: 'No keys left. Ask a speaker.',
+    throttled: 'Too many attempts. Wait a minute.',
+    bad_request: 'Something went wrong. Reload and try again.'
+  };
+
+  $('form').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var code = $('code').value.trim();
+    if (!code) return;
+    $('go').disabled = true;
+    $('msg').className = 'msg';
+    $('msg').textContent = 'Asking…';
+    fetch('claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: code, device: device })
+    }).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (body) { return { status: res.status, body: body }; });
+    }).then(function (r) {
+      if (r.status === 201 && r.body.key) {
+        store(CLAIMED, '1');
+        $('key').textContent = r.body.key;
+        $('key2').textContent = r.body.key;
+        $('form').hidden = true;
+        $('alt').hidden = true;
+        $('msg').textContent = '';
+        $('result').hidden = false;
+        return;
+      }
+      if (r.status === 409) store(CLAIMED, '1');
+      $('msg').className = 'msg bad';
+      $('msg').textContent = MESSAGES[r.body && r.body.error] || ('Unexpected answer (' + r.status + '). Ask a speaker.');
+      $('go').disabled = false;
+    }).catch(function () {
+      $('msg').className = 'msg bad';
+      $('msg').textContent = 'Could not reach the key server. Check your connection and try again.';
+      $('go').disabled = false;
+    });
+  });
+
+  $('copy').addEventListener('click', function () {
+    var key = $('key').textContent;
+    var done = function () { $('copy').textContent = 'Copied'; setTimeout(function () { $('copy').textContent = 'Copy'; }, 1500); };
+    if (navigator.clipboard) navigator.clipboard.writeText(key).then(done, function () { window.prompt('Copy your key:', key); });
+    else window.prompt('Copy your key:', key);
+  });
+})();
+</script>
+</body>
+</html>

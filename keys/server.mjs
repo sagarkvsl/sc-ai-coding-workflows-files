@@ -214,8 +214,9 @@ export function createDispenser(config) {
         res.end('ok');
         status = 200;
       } else if (req.method === 'GET' && url === '/') {
+        const html = page();
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-        res.end(page());
+        res.end(html);
         status = 200;
       } else if (req.method === 'POST' && url === '/claim') {
         ({ status, tag = '' } = await handleClaim(req, res, ip));
@@ -226,7 +227,7 @@ export function createDispenser(config) {
         status = json(res, 404, { error: 'not_found' });
       }
     } catch (err) {
-      status = res.headersSent ? res.statusCode : json(res, 500, { error: 'internal' });
+      if (res.headersSent) { status = res.statusCode; res.end(); } else status = json(res, 500, { error: 'internal' });
       log(`error: ${err.message}`);
     }
     if (url !== '/healthz') log(`${req.method} ${url} ${status} ip=${ip} ${tag}`.trim());
