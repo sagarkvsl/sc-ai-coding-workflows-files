@@ -32,6 +32,7 @@ A 50-person external workshop runs DeepSeek models through OpenRouter. Participa
 
 - Scripts and service are plain Node 22+ with no npm dependencies, matching `setup.mjs`. Tests use `node --test`.
 - The service runs as one pod on the `devbox` Kubernetes cluster (kube context `kubernetes-admin@devbox`, reachable only on the Brevo VPN from a speaker laptop). It is exposed through a `cloudflared` quick tunnel sidecar, which gives a random `https://<words>.trycloudflare.com` URL and needs no account, DNS, or ingress.
+- Verified on devbox 2026-10-29: no Gatekeeper or Kyverno, no NetworkPolicies, pods already pull from Docker Hub and ghcr.io without a pull secret, and a throwaway pod with `nginx:alpine` plus `cloudflare/cloudflared:latest` registered a quick tunnel and served HTTP 200 to the public internet within about 30 seconds. Egress and image pull need no further checks.
 - The workshop repo is `sahilsharma2408/sc-ai-coding-workflows-files` and it is public. We have read access only, so changes arrive as a PR from a fork, stacked on PR #1 (`feat/setup-script`).
 - Because the repo is public, nothing Brevo-specific goes into it: no cluster names, kube contexts, VPN mentions, registry paths, or manifests. The public repo gets the scripts, the service, the page, and a generic "run it anywhere with a quick tunnel" README. The devbox manifests and the speaker run-sheet live in a private Brevo repo (location: see open questions).
 
@@ -54,7 +55,6 @@ keys/
   revoke-keys.mjs      speaker laptop: disable every key in the pool file
   server.mjs           the dispenser; reads the pool, serves the claim page and API
   public/index.html    the claim page (inline CSS and JS, no build step)
-  Dockerfile           node:24-alpine, non-root, copies server.mjs and public/
   README.md            generic: how to mint, run the server, open a quick tunnel, revoke
 test/keys.test.mjs
 
@@ -145,14 +145,14 @@ The page never re-shows a key after reload. It shows "You already have a key on 
 
 ### 6. Deployment on devbox
 
-- Preflight, the week before, before writing any manifest: run a single `cloudflare/cloudflared` pod on devbox with `tunnel --url http://localhost:8080` and confirm it prints a trycloudflare.com URL. That proves image pull and egress to Cloudflare's edge in one step. If it fails, the laptop fallback becomes the primary plan and the k8s part is dropped.
-- The dispenser image is pushed to the registry devbox already pulls from (see open questions). Image tag pinned by digest in the manifest.
+- Preflight done 2026-10-29 (see constraints). Repeat it the day before as a one-minute sanity check.
+- No custom image and no registry. The dispenser runs the stock `node:24-alpine` image with `server.mjs` and `public/index.html` mounted from a ConfigMap, because the whole service is two files with no dependencies. The ConfigMap is generated from the repo files by the run-sheet (`kubectl create configmap dispenser --from-file=...`), so what runs is exactly what was tested.
 - Namespace `workshop-keys`, deleted the day after.
 - Secret `pool` created by the speaker with `kubectl create secret generic pool --from-file=pool.json` over the VPN. Never in git.
 - Secret `dispenser-env` with `EVENT_CODE`, `DEVICE_SALT`, `STATS_TOKEN`.
-- Deployment with two containers: `dispenser` (image built from `keys/Dockerfile`, `node:24-alpine`, copies `server.mjs` and `public/`, runs as non-root, read-only root filesystem, no capabilities) and `cloudflared` (`cloudflare/cloudflared:latest`, `tunnel --no-autoupdate --url http://localhost:8080`). One replica. State on an `emptyDir` shared by nobody else.
+- Deployment with two containers: `dispenser` (`node:24-alpine` pinned by digest, command `node /app/server.mjs`, code from the ConfigMap, runs as non-root, read-only root filesystem, no capabilities) and `cloudflared` (`cloudflare/cloudflared:latest`, `tunnel --no-autoupdate --url http://localhost:8080`). One replica. State on an `emptyDir` shared by nobody else.
 - The tunnel URL is read from the `cloudflared` container logs once at start and put on the slide. A pod restart gives a new URL, so the Deployment uses `Recreate` and the speaker checks the URL at the start of the session.
-- Resource requests 50m CPU and 64Mi memory per container, limits 200m and 128Mi. Devbox Gatekeeper requires limits.
+- Resource requests 50m CPU and 64Mi memory per container, limits 200m and 128Mi.
 - No ingress, no Service of type LoadBalancer. A `ClusterIP` Service exists only so the speaker can `kubectl port-forward` to `/stats`.
 
 Fallback if devbox or the VPN fails on the day: export `/state` if the pod is still reachable, then `STATE_IMPORT=state.json node keys/server.mjs` and `cloudflared tunnel --url http://localhost:8080` on the speaker laptop with the same env. New URL on the slide. Same code, documented in `keys/README.md` (generic) and `RUNSHEET.md` (Brevo specifics).
@@ -200,7 +200,8 @@ Day after: `kubectl delete ns workshop-keys`, delete `pool.json`, delete the man
 - Lockout for wrong codes is per device, and per-IP limits are loose enough for 50 people behind one NAT.
 - Nothing Brevo-specific goes to the public workshop repo.
 
+- No custom image: code mounted from a ConfigMap onto stock `node:24-alpine`, so nothing is pushed to any registry.
+
 ## Open questions for the team
 
-1. Which registry does devbox pull from, and does it need a pull secret? Needed for the Deployment image reference. If unknown, the preflight pod will tell us whether a public Docker Hub image is pullable, and we can push the dispenser image to Docker Hub under a throwaway account.
-2. Which private Brevo repo holds `workshop-keys/k8s/` and `RUNSHEET.md`? Default if unanswered: a `tools/workshop-keys/` directory in `brevo-agent`.
+1. Which private Brevo repo holds `workshop-keys/k8s/` and `RUNSHEET.md`? Default if unanswered: a `tools/workshop-keys/` directory in `brevo-agent`.
