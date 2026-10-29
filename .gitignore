@@ -16,3 +16,7 @@ coverage/
 .DS_Store
 **/.DS_Store
 Thumbs.db
+
+# Workshop key pool and dispenser state
+pool.json
+state.json
