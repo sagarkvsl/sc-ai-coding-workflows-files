@@ -5,7 +5,7 @@
 //   node lab/workshop/ladder.mjs start <task> --model <label>      make the folder, start the clock
 //   node lab/workshop/ladder.mjs finish <task> --model <label>     stop the clock, score, record
 //   node lab/workshop/ladder.mjs run <task> --model <label>        start, run the harness headless, finish (one command)
-//   node lab/workshop/ladder.mjs run <task> --model <label> --local --id <name>   same, with a model on this laptop
+//   node lab/workshop/ladder.mjs run <task> --model <label> --local --id <name>   same, with a model on this laptop ("qwen3.5" finds "qwen3.5:35b-a3b")
 //   node lab/workshop/ladder.mjs table [--json]                    your results, models down, tasks across
 //
 // Local options: --base-url (default http://127.0.0.1:11434/v1), --context (tokens, default 32768), --timeout (minutes, default 30).
@@ -103,6 +103,28 @@ async function keyUsage() {
   }
 }
 
+// Ollama reads a name with no tag as "<name>:latest", so "qwen3.5" misses "qwen3.5:35b-a3b". Ask the
+// runtime what it serves and pick the one model the name stands for. Fails before any folder is made.
+async function resolveLocalId(id, baseUrl) {
+  let served
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/models`, { signal: AbortSignal.timeout(8000) })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    served = ((await res.json())?.data ?? []).map((m) => m.id).filter(Boolean)
+  } catch (err) {
+    fail(`could not reach the local runtime at ${baseUrl} (${err.message}). Is Ollama running? Try: ollama serve`)
+  }
+  if (served.includes(id)) return id
+  const matches = served.filter((name) => name.split(':')[0] === id || name.startsWith(`${id}:`))
+  if (matches.length === 1) {
+    console.log(`Using ${matches[0]} for --id ${id}.`)
+    return matches[0]
+  }
+  const list = (names) => names.map((n) => `  ${n}`).join('\n')
+  if (matches.length > 1) fail(`--id ${id} matches more than one model. Pick one:\n${list(matches)}`)
+  fail(`no model "${id}" at ${baseUrl}. ${served.length ? `It serves:\n${list(served)}` : 'It serves no models yet. Pull one first, e.g. ollama pull <name>'}`)
+}
+
 const results = () => readJson(path.join(root, 'results.json'), [])
 const saveResults = (rows) => {
   fs.mkdirSync(root, { recursive: true })
@@ -134,8 +156,10 @@ if (command === 'tasks') {
   // --local runs a model served on this laptop (Ollama, LM Studio, llama.cpp). Cost is $0 in money.
   const local = flag('local')
   const known = { flash: 'deepseek/deepseek-v4-flash', pro: 'deepseek/deepseek-v4-pro' }
-  const id = option('id', local ? undefined : known[slug(model)])
+  let id = option('id', local ? undefined : known[slug(model)])
   if (!id) fail(local ? 'give the model name exactly as your runtime lists it: --id <name>' : `unknown label "${model}". Pass the OpenRouter model id: --id vendor/model-name`)
+  const baseUrl = option('base-url', process.env.LOCAL_BASE_URL ?? 'http://127.0.0.1:11434/v1')
+  if (local) id = await resolveLocalId(id, baseUrl)
   if (!local && !(await ensureKey())) fail('no OpenRouter key. Export OPENROUTER_API_KEY, or run this in a terminal to be asked for it.')
   const minutes = Number(option('timeout', '30'))
   const self = [fileURLToPath(import.meta.url)]
@@ -146,7 +170,7 @@ if (command === 'tasks') {
   console.log(`\nRunning ${id} ${local ? 'on this laptop' : 'in the cloud'} through the harness. This can take several minutes (stops after ${minutes} min)...\n`)
   const env = { ...process.env, DSH_MODEL: id }
   if (local) {
-    env.LOCAL_BASE_URL = option('base-url', process.env.LOCAL_BASE_URL ?? 'http://127.0.0.1:11434/v1')
+    env.LOCAL_BASE_URL = baseUrl
     env.LOCAL_CONTEXT = option('context', process.env.LOCAL_CONTEXT ?? '32768')
     env.LOCAL_API_KEY = process.env.LOCAL_API_KEY ?? 'local'
   }
