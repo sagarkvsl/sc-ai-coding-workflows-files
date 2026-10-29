@@ -9,7 +9,7 @@
 //      STATE_IMPORT (optional), PORT (default 8080).
 
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -263,6 +263,14 @@ function main() {
   });
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main();
+// realpathSync: a Kubernetes ConfigMap mounts files through symlinks, and Node resolves the
+// main module's real path, so a plain path comparison would silently skip main() there.
+function isMain() {
+  try {
+    return Boolean(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
 }
+
+if (isMain()) main();

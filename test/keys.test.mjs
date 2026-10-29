@@ -413,6 +413,24 @@ describe('dispenser HTTP', () => {
     assert.match(r.err, /EVENT_CODE/);
   });
 
+  test('main runs when started through a symlink, as a ConfigMap mount does', async () => {
+    const dir = tmp();
+    const poolFile = path.join(dir, 'pool.json');
+    writeFileSync(poolFile, JSON.stringify({ keys: POOL3 }));
+    const link = path.join(dir, 'server.mjs');
+    const { symlinkSync } = await import('node:fs');
+    symlinkSync(SERVER, link);
+    const r = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [link], {
+        env: { ...process.env, POOL_FILE: poolFile, EVENT_CODE: 'tulip', DEVICE_SALT: 's', STATS_TOKEN: 't', STATE_FILE: path.join(dir, 's.json'), PORT: '0' },
+      });
+      let out = '';
+      child.stdout.on('data', (d) => { out += d; if (/listening/.test(out)) { child.kill(); resolve({ code: 'listening', out }); } });
+      child.on('exit', (code) => resolve({ code, out }));
+    });
+    assert.equal(r.code, 'listening', `server exited with ${r.code}: ${r.out}`);
+  });
+
   test('main serves on PORT with POOL_LOAD keys', async () => {
     const dir = tmp();
     const poolFile = path.join(dir, 'pool.json');
