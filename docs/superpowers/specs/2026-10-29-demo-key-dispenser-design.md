@@ -1,6 +1,6 @@
 # Demo key dispenser: one short-lived OpenRouter key per participant
 
-Date: 2026-10-29. Status: draft for review.
+Date: 2026-10-29. Status: approved.
 
 ## Intent
 
@@ -34,7 +34,7 @@ A 50-person external workshop runs DeepSeek models through OpenRouter. Participa
 - The service runs as one pod on the `devbox` Kubernetes cluster (kube context `kubernetes-admin@devbox`, reachable only on the Brevo VPN from a speaker laptop). It is exposed through a `cloudflared` quick tunnel sidecar, which gives a random `https://<words>.trycloudflare.com` URL and needs no account, DNS, or ingress.
 - Verified on devbox 2026-10-29: no Gatekeeper or Kyverno, no NetworkPolicies, pods already pull from Docker Hub and ghcr.io without a pull secret, and a throwaway pod with `nginx:alpine` plus `cloudflare/cloudflared:latest` registered a quick tunnel and served HTTP 200 to the public internet within about 30 seconds. Egress and image pull need no further checks.
 - The workshop repo is `sahilsharma2408/sc-ai-coding-workflows-files` and it is public. We have read access only, so changes arrive as a PR from a fork, stacked on PR #1 (`feat/setup-script`).
-- Because the repo is public, nothing Brevo-specific goes into it: no cluster names, kube contexts, VPN mentions, registry paths, or manifests. The public repo gets the scripts, the service, the page, and a generic "run it anywhere with a quick tunnel" README. The devbox manifests and the speaker run-sheet live in a private Brevo repo (location: see open questions).
+- Because the repo is public, nothing Brevo-specific goes into it: no cluster names, kube contexts, VPN mentions, registry paths, or manifests. The public repo gets the scripts, the service, the page, and a generic "run it anywhere with a quick tunnel" README. The devbox manifests and the speaker run-sheet live at `tools/workshop-keys/` in the private `brevo-agent` repo.
 
 ## OpenRouter facts the design relies on (verified against the docs 2026-10-29)
 
@@ -58,8 +58,8 @@ keys/
   README.md            generic: how to mint, run the server, open a quick tunnel, revoke
 test/keys.test.mjs
 
-Private Brevo repo (see open questions):
-workshop-keys/
+brevo-agent repo:
+tools/workshop-keys/
   k8s/                 Namespace, Deployment, Service; Secrets are created by hand, never committed
   RUNSHEET.md          the day-before / day-of / day-after checklist with cluster details
 ```
@@ -202,6 +202,6 @@ Day after: `kubectl delete ns workshop-keys`, delete `pool.json`, delete the man
 
 - No custom image: code mounted from a ConfigMap onto stock `node:24-alpine`, so nothing is pushed to any registry.
 
-## Open questions for the team
+## Decided by the team
 
-1. Which private Brevo repo holds `workshop-keys/k8s/` and `RUNSHEET.md`? Default if unanswered: a `tools/workshop-keys/` directory in `brevo-agent`.
+- The Brevo-side files (`k8s/` and `RUNSHEET.md`) live at `tools/workshop-keys/` in the `brevo-agent` repo (confirmed 2026-10-29).
