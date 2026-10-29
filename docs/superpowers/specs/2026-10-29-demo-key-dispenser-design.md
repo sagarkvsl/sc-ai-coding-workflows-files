@@ -32,7 +32,8 @@ A 50-person external workshop runs DeepSeek models through OpenRouter. Participa
 
 - Scripts and service are plain Node 22+ with no npm dependencies, matching `setup.mjs`. Tests use `node --test`.
 - The service runs as one pod on the `devbox` Kubernetes cluster (kube context `kubernetes-admin@devbox`, reachable only on the Brevo VPN from a speaker laptop). It is exposed through a `cloudflared` quick tunnel sidecar, which gives a random `https://<words>.trycloudflare.com` URL and needs no account, DNS, or ingress.
-- The workshop repo is `sahilsharma2408/sc-ai-coding-workflows-files`. We have read access only, so changes arrive as a PR from a fork, stacked on PR #1 (`feat/setup-script`).
+- The workshop repo is `sahilsharma2408/sc-ai-coding-workflows-files` and it is public. We have read access only, so changes arrive as a PR from a fork, stacked on PR #1 (`feat/setup-script`).
+- Because the repo is public, nothing Brevo-specific goes into it: no cluster names, kube contexts, VPN mentions, registry paths, or manifests. The public repo gets the scripts, the service, the page, and a generic "run it anywhere with a quick tunnel" README. The devbox manifests and the speaker run-sheet live in a private Brevo repo (location: see open questions).
 
 ## OpenRouter facts the design relies on (verified against the docs 2026-10-29)
 
@@ -47,14 +48,20 @@ A 50-person external workshop runs DeepSeek models through OpenRouter. Participa
 Three pieces, in the workshop repo under `keys/`.
 
 ```
+Public workshop repo:
 keys/
   mint-keys.mjs        speaker laptop: management key in, pool file out
   revoke-keys.mjs      speaker laptop: disable every key in the pool file
   server.mjs           the dispenser; reads the pool, serves the claim page and API
   public/index.html    the claim page (inline CSS and JS, no build step)
-  k8s/                 Namespace, Secret (created by hand, never committed), Deployment, Service
-  README.md            run-sheet for the day
+  Dockerfile           node:24-alpine, non-root, copies server.mjs and public/
+  README.md            generic: how to mint, run the server, open a quick tunnel, revoke
 test/keys.test.mjs
+
+Private Brevo repo (see open questions):
+workshop-keys/
+  k8s/                 Namespace, Deployment, Service; Secrets are created by hand, never committed
+  RUNSHEET.md          the day-before / day-of / day-after checklist with cluster details
 ```
 
 `setup.mjs` gains a `--claim <url>` option that calls the dispenser.
@@ -78,7 +85,7 @@ test/keys.test.mjs
 
 ### 3. Dispenser (`server.mjs`)
 
-A single-process HTTP server, state in memory plus one JSON file on an `emptyDir` for restarts within the day.
+A single-process HTTP server. Claim state is in memory and written to `STATE_FILE` after every change. `STATE_FILE` is loaded at start if present, so a container restart keeps claims. A pod replacement or the laptop fallback loses the `emptyDir`, so the state is also exportable: `GET /state` (speaker token) returns the claims JSON, and the server accepts `STATE_IMPORT` pointing at such a file at start. The run-sheet exports state before any redeploy and before switching to the laptop. If the speaker forgets, the server hands out keys that are already in someone's hands, and that is the accepted failure (two people sharing one $10 key).
 
 Config via env:
 
@@ -96,19 +103,22 @@ Routes:
 - `GET /` serves the claim page.
 - `POST /claim` body `{ "code": "...", "device": "..." }`. Returns `201 { "key": "sk-or-...", "id": 17 }` on first claim, `409 { "error": "already_claimed" }` for a known device, `403` for a wrong code, `429` when throttled, `503 { "error": "pool_empty" }` when the pool is used up.
 - `GET /stats` with `Authorization: Bearer $STATS_TOKEN`: `{ "total": 50, "claimed": 23, "remaining": 27 }`. Speaker only.
+- `GET /state` with the same token: the full claims file (salted device hashes and key ids, no keys). Speaker only. Used to carry state across a redeploy or to the laptop fallback.
 - `GET /healthz` for the kubelet.
 
 Device binding:
 
 - The browser generates 32 random bytes on first visit, stores them in `localStorage` and a `SameSite=Strict` cookie, and sends the value as `device`. Either store surviving is enough to block a repeat.
+- The browser identity and the script identity are different, so one laptop can get one key through each path. That is accepted: the page and the script both say "use one path, not both", the pool is sized with headroom, and the cap and expiry bound the cost. Making the two paths share an identity is not worth the complexity for a one-day event.
 - The script sends `sha256(machine identifier)` where the identifier is `/etc/machine-id` on Linux, `IOPlatformUUID` on macOS, and `MachineGuid` on Windows, falling back to hostname plus home directory. The server hashes again with `DEVICE_SALT` before storing, so neither raw hardware IDs nor the client hash are persisted.
 - Claims are keyed on the salted hash. A repeat returns `409` and never a key, including the original one. The page tells the person to ask a speaker, who can hand a spare.
 
 Throttling and abuse:
 
-- Per-IP token bucket: 10 claims per minute per IP. Conference NAT means 50 people may share one IP, so this is loose on purpose and only stops a loop.
-- Global: 200 requests per minute total across all routes. Above that the server returns `429` until the bucket refills.
-- Wrong event code: after 20 failures from one IP, that IP gets `429` for 5 minutes.
+- Throttles must never refuse a first-time claimer behind conference NAT. The moment the code is read out, 50 people on one IP claim within the same minute, so nothing per-IP may be tighter than that.
+- Per-IP token bucket: 120 claim attempts per minute per IP. This only stops a scripted loop.
+- Global: 600 requests per minute total across all routes. Above that the server returns `429` until the bucket refills.
+- Wrong event code: lockout is per device, not per IP. After 10 wrong codes from one device hash, that device gets `429` for 5 minutes. A room full of typos never locks out the room.
 - Body size capped at 1 KB. Only `POST /claim` accepts a body.
 - No key is ever logged. Logs carry the claim id, the salted device hash prefix, the IP, and the outcome.
 - The pool file is read once and the plaintext keys are held only in process memory. `/stats` and logs expose counts and hashes, never keys.
@@ -125,7 +135,9 @@ The page never re-shows a key after reload. It shows "You already have a key on 
 
 ### 5. `setup.mjs --claim <url>`
 
-- Posts the device hash and a code prompted interactively (hidden input, same helper as the key prompt).
+- `--claim` is a short, claim-only path. It runs the Node check and the OpenRouter check, then claims, validates, saves and exits. It does not download the harness, run `npm ci`, or create the project, so it is safe on conference Wi-Fi. The slide shows `node setup.mjs --claim <url>`.
+- The event code comes from `--code <word>`, or `WORKSHOP_CODE` in the environment, or a hidden interactive prompt when neither is set and a TTY is present. Tests and copy-pasted one-liners use `--code`.
+- Posts the device hash and the code.
 - On `201`: validates the key against `/api/v1/key` exactly like a pasted key, prints it once, and writes it to `~/.workshop/openrouter.env` as `OPENROUTER_API_KEY=...` with mode `0600`. The summary tells the person to `source ~/.workshop/openrouter.env`.
 - On later runs, `setup.mjs` reads that file if `OPENROUTER_API_KEY` is unset, so `--check` on the day reports the key as valid without a prompt.
 - On `409`: prints the already-claimed message and the saved file path if present.
@@ -133,6 +145,8 @@ The page never re-shows a key after reload. It shows "You already have a key on 
 
 ### 6. Deployment on devbox
 
+- Preflight, the week before, before writing any manifest: run a single `cloudflare/cloudflared` pod on devbox with `tunnel --url http://localhost:8080` and confirm it prints a trycloudflare.com URL. That proves image pull and egress to Cloudflare's edge in one step. If it fails, the laptop fallback becomes the primary plan and the k8s part is dropped.
+- The dispenser image is pushed to the registry devbox already pulls from (see open questions). Image tag pinned by digest in the manifest.
 - Namespace `workshop-keys`, deleted the day after.
 - Secret `pool` created by the speaker with `kubectl create secret generic pool --from-file=pool.json` over the VPN. Never in git.
 - Secret `dispenser-env` with `EVENT_CODE`, `DEVICE_SALT`, `STATS_TOKEN`.
@@ -141,11 +155,11 @@ The page never re-shows a key after reload. It shows "You already have a key on 
 - Resource requests 50m CPU and 64Mi memory per container, limits 200m and 128Mi. Devbox Gatekeeper requires limits.
 - No ingress, no Service of type LoadBalancer. A `ClusterIP` Service exists only so the speaker can `kubectl port-forward` to `/stats`.
 
-Fallback if devbox or the VPN fails on the day: `node keys/server.mjs` and `cloudflared tunnel --url http://localhost:8080` on the speaker laptop with the same env. Same code, same URL shape, documented in `keys/README.md`.
+Fallback if devbox or the VPN fails on the day: export `/state` if the pod is still reachable, then `STATE_IMPORT=state.json node keys/server.mjs` and `cloudflared tunnel --url http://localhost:8080` on the speaker laptop with the same env. New URL on the slide. Same code, documented in `keys/README.md` (generic) and `RUNSHEET.md` (Brevo specifics).
 
 ### 7. Run-sheet (`keys/README.md`)
 
-Day before: create management key with expiry, mint, create secrets, deploy, read URL, test one claim from a phone on mobile data, revoke that test key manually or accept the loss.
+Day before: create management key with expiry, mint, create secrets, deploy, read URL, test one claim from a phone on mobile data, revoke that test key manually or accept the loss. Any redeploy after that: export `/state` first, import it on the new pod via the `STATE_IMPORT` secret.
 Day of: show URL plus QR and say the code, watch `/stats`, hand spares from `pool.json` if asked.
 Day after: `kubectl delete ns workshop-keys`, delete `pool.json`, delete the management key in the OpenRouter dashboard.
 
@@ -180,4 +194,13 @@ Day after: `kubectl delete ns workshop-keys`, delete `pool.json`, delete the man
 - Quick tunnel sidecar rather than a Worker, to keep state and code on devbox and avoid any external account.
 - Device binding rather than per-IP, because of conference NAT.
 - The key is saved to one file on the participant machine when claimed through the script, which changes PR #1's "never written to disk" promise for that path only.
-- 55 minted, 50 loaded, 5 spares kept in the file.
+- 60 minted, 50 loaded, 10 spares kept in the file, because the browser and script paths can each yield a key per laptop.
+- Claim state is carried across redeploys by export and import rather than by a persistent volume, to keep the cluster footprint to one Secret-backed pod.
+- `--claim` is claim-only and takes `--code`, so the slide command works without a TTY and on conference Wi-Fi.
+- Lockout for wrong codes is per device, and per-IP limits are loose enough for 50 people behind one NAT.
+- Nothing Brevo-specific goes to the public workshop repo.
+
+## Open questions for the team
+
+1. Which registry does devbox pull from, and does it need a pull secret? Needed for the Deployment image reference. If unknown, the preflight pod will tell us whether a public Docker Hub image is pullable, and we can push the dispenser image to Docker Hub under a throwaway account.
+2. Which private Brevo repo holds `workshop-keys/k8s/` and `RUNSHEET.md`? Default if unanswered: a `tools/workshop-keys/` directory in `brevo-agent`.
